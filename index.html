@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Anvil Editor</title>
+<meta name="description" content="A Unity-style game editor that runs real C# scripts in your browser.">
+<link rel="icon" href="editor/img/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="editor/css/editor.css">
+<script type="importmap">
+{ "imports": { "three": "./vendor/three.js" } }
+</script>
+<script>
+// Opened straight from a file? Browsers block that page from loading its own code, so explain what to do instead.
+if (location.protocol === 'file:') document.addEventListener('DOMContentLoaded', function () {
+  document.body.innerHTML = '<div style="max-width:620px;margin:60px auto;padding:0 20px;font:15px/1.6 system-ui,sans-serif;color:#ddd">' +
+    '<h2 style="color:#fff;margin:0 0 12px">Anvil needs to be opened from a web address</h2>' +
+    '<p>You opened <b>index.html</b> straight from a folder on your computer (the address starts with <code>file:///</code>). Browsers don\'t let a page opened that way load its own code or the C# engine, so nothing would work.</p>' +
+    '<p><b>Normal way:</b> upload everything in this folder to a GitHub repository and turn on GitHub Pages (steps in <b>README.md</b>). Then open <code>https://your-username.github.io/anvil/</code>.</p>' +
+    '<p><b>To try it on this computer first</b> (needs Python):</p><ol>' +
+    '<li>Open this folder in File Explorer, click the address bar, type <code>cmd</code> and press Enter.</li>' +
+    '<li>In the black window, type <code>python -m http.server 8000</code> and press Enter. Leave that window open.</li>' +
+    '<li>Open <a style="color:#7cb4ff" href="http://localhost:8000/">http://localhost:8000/</a> in Chrome or Edge.</li></ol></div>';
+  document.body.style.background = '#222';
+});
+</script>
+</head>
+<body>
+<div id="app">
+  <header id="menubar">
+    <div class="menu-logo" title="Anvil">
+      <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M3 9h11l1-2h6v3c-2 0-3 1-4 3l-1 2H8v2h3v2H5v-2h1v-2L3 12z"/></svg>
+    </div>
+    <nav id="menus"></nav>
+    <div class="menubar-right">
+      <span id="engine-status" class="engine-status loading" title="C# engine status">Loading C# engine…</span>
+      <span id="project-name"></span>
+    </div>
+  </header>
+  <div id="toolbar">
+    <div class="tool-group" id="transform-tools">
+      <button data-tool="view" title="View Tool (Q)" class="tbtn">✋</button>
+      <button data-tool="translate" title="Move Tool (W)" class="tbtn active">✥</button>
+      <button data-tool="rotate" title="Rotate Tool (E)" class="tbtn">⟳</button>
+      <button data-tool="scale" title="Scale Tool (R)" class="tbtn">⤢</button>
+    </div>
+    <div class="tool-group">
+      <button id="btn-space" class="tbtn wide" title="Toggle Tool Handle Rotation (X)">Local</button>
+      <button id="btn-snap" class="tbtn wide" title="Toggle grid snapping (hold Ctrl while dragging)">Snap off</button>
+    </div>
+    <div class="play-group">
+      <button id="btn-play" class="pbtn" title="Play (Ctrl+P)">▶</button>
+      <button id="btn-pause" class="pbtn" title="Pause (Ctrl+Shift+P)">❚❚</button>
+      <button id="btn-step" class="pbtn" title="Step (Ctrl+Alt+P)">▶❚</button>
+    </div>
+    <div class="tool-group right">
+      <button id="btn-github" class="tbtn wide" title="Sync with GitHub">GitHub</button>
+      <button id="btn-export" class="tbtn wide" title="Export to Unity">Export to Unity</button>
+    </div>
+  </div>
+  <main id="workspace">
+    <section class="panel" id="panel-hierarchy" style="grid-area: hier">
+      <div class="panel-tabs"><div class="tab active">Hierarchy</div><div class="panel-tab-actions"><button class="icon-btn" id="hier-add" title="Create">＋▾</button></div></div>
+      <div class="panel-search"><input id="hier-search" placeholder="Search" spellcheck="false"></div>
+      <div class="panel-body" id="hierarchy"></div>
+    </section>
+    <div class="splitter v" data-split="left"></div>
+    <section class="panel" id="panel-center" style="grid-area: center">
+      <div class="panel-tabs" id="center-tabs"></div>
+      <div class="panel-body" id="center-body">
+        <div id="view-scene" class="view">
+          <div class="view-bar">
+            <button class="vbtn" id="scene-shading" title="Shading">Shaded</button>
+            <button class="vbtn" id="scene-2d" title="2D view">2D</button>
+            <button class="vbtn active" id="scene-grid" title="Toggle grid">Grid</button>
+            <button class="vbtn active" id="scene-gizmos" title="Toggle gizmos">Gizmos</button>
+            <span class="flex"></span>
+            <span class="view-hint">RMB look + WASD · MMB pan · Alt+LMB orbit · Wheel zoom · F frame</span>
+          </div>
+          <div class="canvas-host" id="scene-host"></div>
+        </div>
+        <div id="view-game" class="view hidden">
+          <div class="view-bar">
+            <span class="view-label">Display 1</span>
+            <select id="game-aspect" class="vselect"><option value="free">Free Aspect</option><option value="16:9">16:9</option><option value="16:10">16:10</option><option value="4:3">4:3</option></select>
+            <span class="flex"></span>
+            <button class="vbtn" id="game-maximize" title="Maximize on Play">Maximize On Play</button>
+            <button class="vbtn" id="game-stats">Stats</button>
+            <button class="vbtn" id="game-gizmos">Gizmos</button>
+          </div>
+          <div class="canvas-host" id="game-host"><div id="gui-overlay"></div><div id="game-stats-box" class="hidden"></div><div id="game-hint" class="game-hint">Click here so the game gets your keyboard and mouse</div></div>
+        </div>
+        <div id="view-code" class="view hidden"></div>
+      </div>
+    </section>
+    <div class="splitter v" data-split="right"></div>
+    <section class="panel" id="panel-inspector" style="grid-area: insp">
+      <div class="panel-tabs"><div class="tab active" data-tab="inspector">Inspector</div><div class="tab" data-tab="settings">Project Settings</div></div>
+      <div class="panel-body" id="inspector"></div>
+    </section>
+    <div class="splitter h" data-split="bottom"></div>
+    <section class="panel" id="panel-bottom" style="grid-area: bottom">
+      <div class="panel-tabs" id="bottom-tabs">
+        <div class="tab active" data-tab="project">Project</div>
+        <div class="tab" data-tab="console">Console <span id="console-badge" class="badge hidden"></span></div>
+        <div class="tab" data-tab="files">Files</div>
+      </div>
+      <div class="panel-body" id="bottom-body">
+        <div id="project-view" class="subview"></div>
+        <div id="console-view" class="subview hidden"></div>
+        <div id="files-view" class="subview hidden"></div>
+      </div>
+    </section>
+  </main>
+  <footer id="statusbar"><span id="status-msg"></span><span class="flex"></span><span id="status-compile"></span><span id="status-fps"></span></footer>
+</div>
+<div id="menu-layer"></div>
+<div id="dialog-layer"></div>
+<div id="toast-layer"></div>
+<script type="module" src="editor/js/main.js"></script>
+</body>
+</html>
