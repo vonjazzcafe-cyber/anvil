@@ -223,7 +223,10 @@ function unlink(forget = true) {
 
 async function pickFolder() {
   if (!folderSupported()) { toast('Working in a folder needs Chrome or Edge on a computer.', 'error'); return null; }
-  try { return await window.showDirectoryPicker({ id: 'anvil-project', mode: 'readwrite' }); }
+  // Chrome won't hand a website a whole Documents/Desktop/Downloads folder or a drive ("contains system files"):
+  // say so up front and start inside Documents, where making a project folder takes one click
+  toast('Pick a folder of its own, e.g. make a new folder "RIVET" inside Documents. Chrome blocks Documents, Desktop, Downloads and C:\\ themselves.');
+  try { return await window.showDirectoryPicker({ id: 'anvil-project', mode: 'readwrite', startIn: 'documents' }); }
   catch (e) { if (e.name !== 'AbortError') toast(e.message || String(e), 'error'); return null; }
 }
 
