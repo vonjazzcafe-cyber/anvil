@@ -24,6 +24,7 @@ import { initLocalFolder, openProjectFolder, saveProjectToFolder, reconnectFolde
 
 let viewport;
 const openTabs = [];          // open script paths (center tabs)
+let centerOrder = ['scene', 'game']; // the order the center tabs are shown in (they can be dragged around)
 let centerTab = 'scene';
 let scriptsDirty = true;
 let lastCompileOk = false;
@@ -62,7 +63,7 @@ async function boot() {
   bus.on('play-state', updatePlayButtons);
   bus.on('project-loaded', onProjectLoaded);
   bus.on('code-dirty', renderCenterTabs);
-  bus.on('asset-renamed', ({ from, to }) => { const i = openTabs.indexOf(from); if (i >= 0) { code.renamedFile(from, to); openTabs[i] = to; if (centerTab === from) { centerTab = to; } renderCenterTabs(); if (centerTab === to) code.openFile(to); } });
+  bus.on('asset-renamed', ({ from, to }) => { const i = openTabs.indexOf(from); if (i >= 0) { code.renamedFile(from, to); openTabs[i] = to; const oi = centerOrder.indexOf(from); if (oi >= 0) centerOrder[oi] = to; if (centerTab === from) { centerTab = to; } renderCenterTabs(); if (centerTab === to) code.openFile(to); } });
   bus.on('asset-deleted', (p) => { for (const t of [...openTabs]) if (t === p || t.startsWith(p + '/')) closeTab(t); });
   bus.on('engine-ready', () => { engine.setInputHandling(project.settings.inputHandling); compileNow(); });
   bus.on('engine-failed', (msg) => log(2, 'The C# engine could not start: ' + msg + '\nYou can still build scenes; Play and script compiling need the engine.'));
@@ -160,22 +161,72 @@ function initTabs() {
 function renderCenterTabs() {
   const bar = document.getElementById('center-tabs');
   bar.innerHTML = '';
+  // keep the order list in step with what's open: closed tabs drop out, new ones go on the end
+  centerOrder = centerOrder.filter(id => id === 'scene' || id === 'game' || openTabs.includes(id));
+  for (const id of ['scene', 'game', ...openTabs]) if (!centerOrder.includes(id)) centerOrder.push(id);
   const tab = (id, label, closable) => {
     const dirty = closable && code.anyDirty && isDirty(id);
     const t = el('div', { class: 'tab' + (centerTab === id ? ' active' : '') + (dirty ? ' dirty' : '') }, el('span', { class: 'tname', text: label }));
+    t.dataset.id = id;
     if (closable) { const x = el('span', { class: 'close', text: '✕', title: 'Close' }); x.addEventListener('click', (e) => { e.stopPropagation(); closeTab(id); }); t.append(x); }
-    t.addEventListener('click', () => showCenter(id));
+    t.addEventListener('click', () => { if (t.dataset.dragged) { delete t.dataset.dragged; return; } showCenter(id); });
     t.addEventListener('auxclick', (e) => { if (e.button === 1 && closable) closeTab(id); });
+    t.addEventListener('pointerdown', (e) => startTabDrag(e, t, bar));
     bar.append(t);
   };
-  tab('scene', '# Scene'); tab('game', '◉ Game');
-  for (const p of openTabs) tab(p, fileName(p), true);
+  for (const id of centerOrder) {
+    if (id === 'scene') tab('scene', '# Scene');
+    else if (id === 'game') tab('game', '◉ Game');
+    else tab(id, fileName(id), true);
+  }
   // keep the active tab in view when the bar is scrolled
   bar.querySelector('.tab.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   if (!bar.dataset.wheel) {
     bar.dataset.wheel = '1';
     bar.addEventListener('wheel', (e) => { if (bar.scrollWidth > bar.clientWidth && Math.abs(e.deltaY) > Math.abs(e.deltaX)) { bar.scrollLeft += e.deltaY; e.preventDefault(); } }, { passive: false });
   }
+}
+// drag a center tab sideways to move it; a blue line shows where it will land
+function startTabDrag(e, t, bar) {
+  if (e.button !== 0 || e.target.closest('.close')) return;
+  const startX = e.clientX; let dragging = false, dropAt = -1, scrollTimer = 0, lastX = startX;
+  const marker = el('div', { class: 'tab-drop-marker' });
+  const others = () => [...bar.querySelectorAll('.tab')].filter(x => x !== t);
+  const place = (x) => {
+    const list = others(); let i = list.length;
+    for (let k = 0; k < list.length; k++) { const r = list[k].getBoundingClientRect(); if (x < r.left + r.width / 2) { i = k; break; } }
+    dropAt = i;
+    const br = bar.getBoundingClientRect();
+    const ref = list[i] ? list[i].getBoundingClientRect().left : (list.length ? list[list.length - 1].getBoundingClientRect().right + 2 : br.left);
+    marker.style.left = (ref - br.left + bar.scrollLeft - 2) + 'px';
+  };
+  const move = (ev) => {
+    lastX = ev.clientX;
+    if (!dragging) {
+      if (Math.abs(ev.clientX - startX) < 6) return;
+      dragging = true; t.classList.add('dragging'); bar.append(marker);
+      // scroll the bar when dragging near its ends
+      scrollTimer = setInterval(() => {
+        const br = bar.getBoundingClientRect();
+        if (lastX < br.left + 30) bar.scrollLeft -= 12; else if (lastX > br.right - 30) bar.scrollLeft += 12; else return;
+        place(lastX);
+      }, 30);
+    }
+    t.style.transform = `translateX(${ev.clientX - startX}px)`;
+    place(ev.clientX);
+  };
+  const up = () => {
+    window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); window.removeEventListener('pointercancel', up);
+    clearInterval(scrollTimer); marker.remove();
+    if (!dragging) return;
+    t.dataset.dragged = '1'; t.classList.remove('dragging'); t.style.transform = '';
+    const id = t.dataset.id;
+    const rest = others().map(x => x.dataset.id);
+    rest.splice(Math.max(0, Math.min(rest.length, dropAt)), 0, id);
+    centerOrder = rest;
+    renderCenterTabs();
+  };
+  window.addEventListener('pointermove', move); window.addEventListener('pointerup', up); window.addEventListener('pointercancel', up);
 }
 const dirtyMap = new Set();
 bus.on('code-dirty', ({ path, dirty }) => { if (dirty) dirtyMap.add(path); else dirtyMap.delete(path); });

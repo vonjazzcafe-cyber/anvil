@@ -89,7 +89,10 @@ button, input, select, textarea { font: inherit; color: inherit; }
 #center-tabs { overflow-x: auto; overflow-y: hidden; height: auto; min-height: 26px; scrollbar-width: thin; scrollbar-color: #555 transparent; }
 #center-tabs::-webkit-scrollbar { height: 5px; }
 #center-tabs::-webkit-scrollbar-thumb { background: #555; border-radius: 3px; }
+#center-tabs { position: relative; }
 #center-tabs .tab { flex: none; }
+#center-tabs .tab.dragging { position: relative; z-index: 3; opacity: .85; box-shadow: 0 2px 8px rgba(0,0,0,.5); pointer-events: none; }
+.tab-drop-marker { position: absolute; top: 3px; bottom: 0; width: 3px; background: #4a90e2; border-radius: 2px; z-index: 4; pointer-events: none; }
 .tab.dirty .tname::after { content: " •"; color: #e5c06b; }
 .panel-tab-actions { margin-left: auto; padding: 0 4px 3px; }
 .icon-btn { background: transparent; border: none; color: #ccc; cursor: pointer; padding: 1px 6px; border-radius: 3px; }
