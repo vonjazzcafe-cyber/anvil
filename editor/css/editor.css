@@ -85,6 +85,11 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .tab:hover:not(.active) { color: #ddd; background: #333; }
 .tab .close { opacity: .55; padding: 0 2px; border-radius: 2px; }
 .tab .close:hover { opacity: 1; background: #555; }
+/* many open scripts: the tab bar scrolls sideways (thin scrollbar, or the mouse wheel) instead of hiding tabs */
+#center-tabs { overflow-x: auto; overflow-y: hidden; height: auto; min-height: 26px; scrollbar-width: thin; scrollbar-color: #555 transparent; }
+#center-tabs::-webkit-scrollbar { height: 5px; }
+#center-tabs::-webkit-scrollbar-thumb { background: #555; border-radius: 3px; }
+#center-tabs .tab { flex: none; }
 .tab.dirty .tname::after { content: " •"; color: #e5c06b; }
 .panel-tab-actions { margin-left: auto; padding: 0 4px 3px; }
 .icon-btn { background: transparent; border: none; color: #ccc; cursor: pointer; padding: 1px 6px; border-radius: 3px; }

@@ -170,6 +170,12 @@ function renderCenterTabs() {
   };
   tab('scene', '# Scene'); tab('game', '◉ Game');
   for (const p of openTabs) tab(p, fileName(p), true);
+  // keep the active tab in view when the bar is scrolled
+  bar.querySelector('.tab.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  if (!bar.dataset.wheel) {
+    bar.dataset.wheel = '1';
+    bar.addEventListener('wheel', (e) => { if (bar.scrollWidth > bar.clientWidth && Math.abs(e.deltaY) > Math.abs(e.deltaX)) { bar.scrollLeft += e.deltaY; e.preventDefault(); } }, { passive: false });
+  }
 }
 const dirtyMap = new Set();
 bus.on('code-dirty', ({ path, dirty }) => { if (dirty) dirtyMap.add(path); else dirtyMap.delete(path); });
