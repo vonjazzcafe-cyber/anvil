@@ -598,8 +598,11 @@ function refCandidates(f, selfObj) {
   return items;
 }
 
-function refField(f, v, set, o) {
-  return objectField(refName(v), f.refType, {
+function refField(f, v, set0, o) {
+  // the edit doesn't redraw the Inspector, so show the new reference in the slot straight away
+  let box = null;
+  const set = (nv, live) => { set0(nv, live); v = nv; box?.setValue(refName(nv)); };
+  return box = objectField(refName(v), f.refType, {
     onPick: async () => {
       const r = await pick('Select ' + f.refType, [{ label: 'None', value: null }, ...refCandidates(f, o)]);
       if (r !== undefined) set(r, false);
