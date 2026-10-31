@@ -88,6 +88,7 @@ function makeGrid() {
   return group;
 }
 
+const ARROWS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
 // ---------- scene camera controller (Unity controls) ----------
 class SceneCamera {
   constructor(camera, dom) {
@@ -95,6 +96,7 @@ class SceneCamera {
     this.pivot = new THREE.Vector3(0, 0, 0);
     this.yaw = Math.PI * 0.25 + Math.PI; this.pitch = -0.38; this.distance = 12;
     this.flySpeed = 6; this.keys = new Set(); this.mode = null; this.last = null;
+    this.arrows = new Set(); this.arrowShift = false;
     this.ortho2D = false;
     this.update();
     dom.addEventListener('contextmenu', e => e.preventDefault());
@@ -102,8 +104,51 @@ class SceneCamera {
     window.addEventListener('pointermove', e => this.move(e));
     window.addEventListener('pointerup', e => this.up(e));
     dom.addEventListener('wheel', e => this.wheel(e), { passive: false });
-    window.addEventListener('keydown', e => { if (this.mode === 'fly') { this.keys.add(e.code); e.preventDefault(); } });
-    window.addEventListener('keyup', e => this.keys.delete(e.code));
+    window.addEventListener('keydown', e => {
+      if (this.mode === 'fly') { this.keys.add(e.code); e.preventDefault(); return; }
+      // arrow keys move the Scene camera without right-click, relative to where it looks (like Unity):
+      // Up/Down forward and back along the ground, Left/Right sideways; hold Shift to go faster
+      if (ARROWS.has(e.code) && !e.ctrlKey && !e.metaKey && !e.altKey && this.arrowsEnabled()) {
+        e.preventDefault();
+        if (!this.arrows.size) this.startArrowLoop();
+        this.arrows.add(e.code);
+      }
+      if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') this.arrowShift = true;
+    });
+    window.addEventListener('keyup', e => {
+      this.keys.delete(e.code); this.arrows.delete(e.code);
+      if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') this.arrowShift = false;
+    });
+    window.addEventListener('blur', () => { this.arrows.clear(); this.keys.clear(); });
+  }
+  arrowsEnabled() {
+    // only for the Scene view, and never while typing in a field or the code editor
+    const a = document.activeElement;
+    if (a && (/INPUT|TEXTAREA|SELECT/.test(a.tagName) || a.isContentEditable || a.closest?.('.cm-editor'))) return false;
+    // the Hierarchy, Project and Console lists use the arrows themselves
+    if (a && a.closest?.('#panel-hierarchy, #panel-inspector, #panel-bottom, .modal, .dialog, .menu')) return false;
+    return this.isSceneVisible ? this.isSceneVisible() : true;
+  }
+  startArrowLoop() {
+    let lastT = performance.now(); const start = lastT;
+    const tick = (t) => {
+      if (!this.arrows.size) return;
+      const dt = Math.min(0.05, (t - lastT) / 1000); lastT = t;
+      const f = this.forward(); f.y = 0;
+      if (f.lengthSq() < 1e-6) f.set(Math.sin(this.yaw), 0, Math.cos(this.yaw)); // looking straight down/up
+      f.normalize();
+      const right = new THREE.Vector3().crossVectors(f, new THREE.Vector3(0, 1, 0)).normalize();
+      const v = new THREE.Vector3();
+      if (this.arrows.has('ArrowUp')) v.add(f); if (this.arrows.has('ArrowDown')) v.sub(f);
+      if (this.arrows.has('ArrowRight')) v.add(right); if (this.arrows.has('ArrowLeft')) v.sub(right);
+      if (v.lengthSq() > 0) {
+        // speed follows how far away you're looking, and builds up the longer you hold the key
+        const base = Math.max(1.5, this.distance * 0.6) * (this.arrowShift ? 4 : 1) * Math.min(3, 1 + (t - start) / 1000 * 0.5);
+        this.pivot.addScaledVector(v.normalize(), base * dt); this.update();
+      }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
   }
   forward() { return new THREE.Vector3(Math.sin(this.yaw) * Math.cos(this.pitch), Math.sin(this.pitch), Math.cos(this.yaw) * Math.cos(this.pitch)); }
   update() {
@@ -220,6 +265,7 @@ export class Viewport {
 
     this.sceneCam = new THREE.PerspectiveCamera(60, 1, 0.03, 5000);
     this.controller = new SceneCamera(this.sceneCam, this.canvas);
+    this.controller.isSceneVisible = () => this.mode === 'scene' && !document.getElementById('view-scene')?.classList.contains('hidden');
     this.gameCam = new THREE.PerspectiveCamera(60, 1, 0.3, 1000);
     this.gameOrtho = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.3, 1000);
 
