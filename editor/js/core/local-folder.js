@@ -257,9 +257,44 @@ export async function reconnectFolder() {
 export function disconnectFolder() { const n = root?.name; unlink(true); if (n) toast(`Stopped saving to folder "${n}". The project stays in this browser.`); }
 export async function storedFolderName() { try { return (await storage.get(handleKey(project.name)))?.name || null; } catch { return null; } }
 
+// The Console, written to Logs/anvil-console.txt in the project folder (like Unity's Logs folder), so the
+// errors and logs can be read from outside Anvil (another editor, or an assistant looking at the folder).
+let logTimer = 0, logWriting = false;
+function scheduleConsoleLog() {
+  if (!root || linkedProject !== project.name) return;
+  clearTimeout(logTimer);
+  logTimer = setTimeout(writeConsoleLog, 1000);
+}
+async function writeConsoleLog() {
+  if (!root || linkedProject !== project.name) return;
+  if (logWriting) { scheduleConsoleLog(); return; }
+  logWriting = true;
+  try {
+    const { getEntries } = await import('../ui/console.js');
+    const { editor } = await import('./scene.js');
+    const all = getEntries();
+    const kind = (e) => e.t === 0 || e.t === 1 || e.t === 4 ? 'Error' : e.t === 2 ? 'Warning' : 'Log';
+    const lines = [
+      '# Anvil Console — ' + project.name,
+      '# written ' + new Date().toISOString() + (editor.playing ? ' · playing' : ' · not playing') + ' · scene: ' + (project.data.openScene || '(none)'),
+      '# ' + all.filter(e => kind(e) === 'Error').length + ' error(s), ' + all.filter(e => kind(e) === 'Warning').length + ' warning(s), ' + all.length + ' entries (newest last, at most 300)',
+      '',
+    ];
+    for (const e of all.slice(-300)) {
+      const where = e.compile && e.file ? ` (${e.file}:${e.line}${e.col ? ':' + e.col : ''})` : '';
+      const t = e.time && !e.compile ? '[' + e.time.toTimeString().slice(0, 8) + '] ' : '';
+      lines.push(`${kind(e).toUpperCase()}${e.compile ? ' (compile)' : ''} ${t}${e.m}${where}${(e.count || 1) > 1 ? '  ×' + e.count : ''}`);
+      if (e.s) for (const l of e.s.split('\n')) if (l.trim()) lines.push('    ' + l.trim());
+    }
+    await writeFile('Logs/anvil-console.txt', lines.join('\n') + '\n');
+  } catch { }
+  logWriting = false;
+}
+
 export function initLocalFolder() {
   if (!folderSupported()) return;
   bus.on('project-saved', () => saveToFolder());
+  bus.on('console-changed', () => scheduleConsoleLog());
   bus.on('project-loaded', async () => {
     if (linkedProject && linkedProject !== project.name) unlink(false);
     // reconnect silently if the browser still allows it; otherwise File › Reconnect asks

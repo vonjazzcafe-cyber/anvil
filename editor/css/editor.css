@@ -332,12 +332,15 @@ input[type=range] { flex: 1; accent-color: #8aa4c8; min-width: 40px; }
 .file-row .fname { flex: 1; font-family: var(--mono); font-size: 11.5px; }
 
 /* collapsible panels (Alt+1 Hierarchy, Alt+2 Inspector, Alt+3 Project/Console, Alt+0 focus) */
-#workspace.hide-left { --lw: 0px; --lsp: 0px; }
-#workspace.hide-right { --rw: 0px; --rsp: 0px; }
-#workspace.hide-bottom { --bh: 0px; --bsp: 0px; }
-#workspace.hide-left #panel-hierarchy, #workspace.hide-left .splitter[data-split="left"],
-#workspace.hide-right #panel-inspector, #workspace.hide-right .splitter[data-split="right"],
-#workspace.hide-bottom #panel-bottom, #workspace.hide-bottom .splitter[data-split="bottom"] { display: none; }
+#workspace.hide-left { --lw: 0px; }
+#workspace.hide-right { --rw: 0px; }
+#workspace.hide-bottom { --bh: 0px; }
+#workspace.hide-left #panel-hierarchy,
+#workspace.hide-right #panel-inspector,
+#workspace.hide-bottom #panel-bottom { display: none; }
+/* a closed panel leaves a thin strip at the edge: drag it out (or double-click it) to reopen */
+#workspace.hide-left { --lsp: 6px; } #workspace.hide-right { --rsp: 6px; } #workspace.hide-bottom { --bsp: 6px; }
+#workspace.hide-left .splitter[data-split="left"], #workspace.hide-right .splitter[data-split="right"], #workspace.hide-bottom .splitter[data-split="bottom"] { background: #4a4a4a; }
 .pan-btn { width: 26px; padding: 0; }
 .vbtn.active { background: #46607c; color: #fff; }
 .tbtn.off { opacity: .5; }

@@ -44,7 +44,7 @@ export function clearConsole(all = false) {
 }
 export function onPlayStart() { if (clearOnPlay) clearConsole(false); }
 function firstLine(s) { return String(s).split('\n')[0]; }
-function queue() { if (renderQueued) return; renderQueued = true; requestAnimationFrame(() => { renderQueued = false; renderList(); }); }
+function queue() { bus.emit('console-changed'); if (renderQueued) return; renderQueued = true; requestAnimationFrame(() => { renderQueued = false; renderList(); }); }
 
 export function initConsole() {
   const v = view();

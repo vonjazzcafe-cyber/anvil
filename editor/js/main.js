@@ -264,10 +264,16 @@ function initSplitters() {
     sp.addEventListener('pointerdown', (e) => {
       e.preventDefault(); sp.classList.add('drag'); sp.setPointerCapture(e.pointerId);
       const kind = sp.dataset.split;
+      // drag a divider almost to the window edge and its panel closes; drag the strip back out to reopen it
+      const MIN = { left: 140, right: 220, bottom: 90 }, MAX = { left: 0.45, right: 0.5, bottom: 0.7 };
       const move = (ev) => {
-        if (kind === 'left') root.style.setProperty('--left', Math.max(140, Math.min(window.innerWidth * 0.45, ev.clientX)) + 'px');
-        if (kind === 'right') root.style.setProperty('--right', Math.max(220, Math.min(window.innerWidth * 0.5, window.innerWidth - ev.clientX)) + 'px');
-        if (kind === 'bottom') root.style.setProperty('--bottom', Math.max(90, Math.min(window.innerHeight * 0.7, window.innerHeight - ev.clientY - 20)) + 'px');
+        const ws = document.getElementById('workspace').getBoundingClientRect();
+        const raw = kind === 'left' ? ev.clientX - ws.left : kind === 'right' ? ws.right - ev.clientX : ws.bottom - ev.clientY;
+        const close = raw < MIN[kind] / 2;
+        window.anvilPanels?.set(kind, close);
+        if (close) return;
+        const lim = (kind === 'bottom' ? window.innerHeight : window.innerWidth) * MAX[kind];
+        root.style.setProperty('--' + kind, Math.max(MIN[kind], Math.min(lim, raw)) + 'px');
       };
       const up = () => {
         sp.classList.remove('drag'); sp.removeEventListener('pointermove', move); sp.removeEventListener('pointerup', up);
@@ -293,13 +299,17 @@ function initPanels() {
     window.dispatchEvent(new Event('resize'));
   };
   const toggle = (k) => { saved[k] = !saved[k]; apply(); };
+  const set = (k, hidden) => { if (!!saved[k] !== hidden) { saved[k] = hidden; apply(); } };
   window.anvilPanels = {
-    toggle,
+    toggle, set,
     show: () => { saved = {}; apply(); },
     focusCode: () => { const all = !(saved.left && saved.right && saved.bottom); saved = { left: all, right: all, bottom: all }; apply(); },
   };
   document.querySelectorAll('.pan-btn').forEach(b => b.addEventListener('click', () => toggle(b.dataset.panel)));
-  document.querySelectorAll('.splitter').forEach(sp => sp.addEventListener('dblclick', () => toggle(sp.dataset.split)));
+  document.querySelectorAll('.splitter').forEach(sp => {
+    sp.addEventListener('dblclick', () => toggle(sp.dataset.split));
+    sp.title = 'Drag to resize · drag to the edge to close · drag back out (or double-click) to reopen';
+  });
   apply();
 }
 
