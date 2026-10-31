@@ -95,7 +95,8 @@ class SceneCamera {
     this.camera = camera; this.dom = dom;
     this.pivot = new THREE.Vector3(0, 0, 0);
     this.yaw = Math.PI * 0.25 + Math.PI; this.pitch = -0.38; this.distance = 12;
-    this.flySpeed = 6; this.keys = new Set(); this.mode = null; this.last = null;
+    this.flySpeed = 6; try { const v = parseFloat(localStorage.getItem('anvil-fly-speed')); if (v > 0) this.flySpeed = v; } catch { }
+    this.keys = new Set(); this.mode = null; this.last = null;
     this.arrows = new Set(); this.arrowShift = false;
     this.ortho2D = false;
     this.update();
@@ -105,7 +106,11 @@ class SceneCamera {
     window.addEventListener('pointerup', e => this.up(e));
     dom.addEventListener('wheel', e => this.wheel(e), { passive: false });
     window.addEventListener('keydown', e => {
-      if (this.mode === 'fly') { this.keys.add(e.code); e.preventDefault(); return; }
+      if (this.mode === 'fly') {
+        // holding right-click: ↑/↓ change the camera speed (like the mouse wheel)
+        if (e.code === 'ArrowUp' || e.code === 'ArrowDown') { this.changeSpeed(e.code === 'ArrowUp' ? 1.25 : 1 / 1.25); e.preventDefault(); return; }
+        this.keys.add(e.code); e.preventDefault(); return;
+      }
       // arrow keys move the Scene camera without right-click, relative to where it looks (like Unity):
       // Up/Down forward and back along the ground, Left/Right sideways; hold Shift to go faster
       if (ARROWS.has(e.code) && !e.ctrlKey && !e.metaKey && !e.altKey && this.arrowsEnabled()) {
@@ -120,6 +125,12 @@ class SceneCamera {
       if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') this.arrowShift = false;
     });
     window.addEventListener('blur', () => { this.arrows.clear(); this.keys.clear(); });
+  }
+  changeSpeed(k) {
+    this.flySpeed = Math.max(0.1, Math.min(500, this.flySpeed * k));
+    try { localStorage.setItem('anvil-fly-speed', String(this.flySpeed)); } catch { }
+    bus.emit('status', `Camera speed ${this.flySpeed < 10 ? this.flySpeed.toFixed(1) : Math.round(this.flySpeed)}`);
+    this.showSpeed?.(this.flySpeed);
   }
   arrowsEnabled() {
     // only for the Scene view, and never while typing in a field or the code editor
@@ -142,8 +153,8 @@ class SceneCamera {
       if (this.arrows.has('ArrowUp')) v.add(f); if (this.arrows.has('ArrowDown')) v.sub(f);
       if (this.arrows.has('ArrowRight')) v.add(right); if (this.arrows.has('ArrowLeft')) v.sub(right);
       if (v.lengthSq() > 0) {
-        // speed follows how far away you're looking, and builds up the longer you hold the key
-        const base = Math.max(1.5, this.distance * 0.6) * (this.arrowShift ? 4 : 1) * Math.min(3, 1 + (t - start) / 1000 * 0.5);
+        // the same speed as flying (right-click + wheel or ↑/↓ sets it); it builds up the longer you hold the key
+        const base = this.flySpeed * (this.arrowShift ? 4 : 1) * Math.min(3, 1 + (t - start) / 1000 * 0.5);
         this.pivot.addScaledVector(v.normalize(), base * dt); this.update();
       }
       requestAnimationFrame(tick);
@@ -194,7 +205,7 @@ class SceneCamera {
   up(e) { if (this.mode) { this.mode = null; this.keys.clear(); } }
   wheel(e) {
     e.preventDefault();
-    if (this.mode === 'fly') { this.flySpeed = Math.max(0.5, Math.min(200, this.flySpeed * (e.deltaY < 0 ? 1.2 : 1 / 1.2))); bus.emit('status', `Camera speed ${this.flySpeed.toFixed(1)}`); return; }
+    if (this.mode === 'fly') { this.changeSpeed(e.deltaY < 0 ? 1.2 : 1 / 1.2); return; }
     const k = Math.pow(1.0018, e.deltaY);
     this.distance = Math.max(0.05, Math.min(5000, this.distance * k));
     this.update();
@@ -265,6 +276,13 @@ export class Viewport {
 
     this.sceneCam = new THREE.PerspectiveCamera(60, 1, 0.03, 5000);
     this.controller = new SceneCamera(this.sceneCam, this.canvas);
+    {
+      const badge = document.createElement('div');
+      badge.style.cssText = 'position:absolute;left:50%;top:10px;transform:translateX(-50%);background:rgba(20,20,20,.8);color:#ddd;padding:3px 10px;border-radius:4px;font:12px system-ui;pointer-events:none;opacity:0;transition:opacity .25s;z-index:5';
+      (document.getElementById('scene-host') || this.canvas.parentElement).append(badge);
+      let hide = 0;
+      this.controller.showSpeed = (v) => { badge.textContent = 'Camera speed ' + (v < 10 ? v.toFixed(1) : Math.round(v)); badge.style.opacity = '1'; clearTimeout(hide); hide = setTimeout(() => { badge.style.opacity = '0'; }, 900); };
+    }
     this.controller.isSceneVisible = () => this.mode === 'scene' && !document.getElementById('view-scene')?.classList.contains('hidden');
     this.gameCam = new THREE.PerspectiveCamera(60, 1, 0.3, 1000);
     this.gameOrtho = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.3, 1000);

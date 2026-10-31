@@ -79,6 +79,7 @@ Anvil runs the same C# against a re-implementation of the UnityEngine API, so sc
 | F | Frame selected |
 | Right-drag + WASD/QE | Fly the Scene camera |
 | Arrow keys (Shift = faster) | Move the Scene camera forward/back/sideways, relative to where it looks, without changing the view |
+| Right-drag + mouse wheel or ↑/↓ | Change the Scene camera speed (used by WASD and the arrow keys; remembered) |
 | Ctrl+P | Play / Stop |
 | Ctrl+Shift+P / Ctrl+Alt+P | Pause / Step |
 | Ctrl+Z / Ctrl+Y | Undo / Redo |
