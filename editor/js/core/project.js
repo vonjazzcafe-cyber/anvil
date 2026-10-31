@@ -43,6 +43,17 @@ function fallback(store, mode, fn) {
   const r = fn(fake);
   return Promise.resolve(r && 'result' in r ? r.result : undefined);
 }
+// Code copied from chats and web pages often carries invisible look-alikes of spaces (non-breaking spaces,
+// thin spaces) and zero-width characters. They break searching, matching and some tools, so scripts are
+// cleaned whenever they come in: pasted, saved, loaded or changed on disk. Quotes and text inside strings stay.
+const ODD_SPACES = /[\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000]/g;
+const ZERO_WIDTH = /[\u200B\u2060\uFEFF]/g;
+export function cleanCode(text) {
+  if (typeof text !== 'string') return text;
+  if (!/[\u00A0\u1680\u2000-\u200B\u202F\u205F\u2060\u3000\uFEFF]/.test(text)) return text;
+  return text.replace(ODD_SPACES, ' ').replace(ZERO_WIDTH, '');
+}
+
 export const storage = {
   getProject: (name) => tx('projects', 'readonly', s => s.get(name)),
   putProject: (p) => tx('projects', 'readwrite', s => s.put(p)),
@@ -141,6 +152,7 @@ export const project = {
     p.files = p.files || {};
     p.playerPrefs = p.playerPrefs || {};
     p.editor = p.editor || {};
+    for (const f of Object.values(p.files)) if (f.kind === 'script' && typeof f.text === 'string') f.text = cleanCode(f.text);
     for (const f of Object.values(p.files)) for (const o of (f.data && f.data.objects) || []) for (const c of o.comps || [])
       if (typeof c.type === 'number') { c.lightType = c.type; c.type = 'Light'; }
     if (!p.openScene || !p.files[p.openScene]) p.openScene = Object.keys(p.files).find(f => p.files[f].kind === 'scene') || null;
@@ -171,6 +183,7 @@ export const project = {
   exists(path) { return !!this.data.files[path] || this.data.folders.includes(path); },
   scripts() { return Object.entries(this.data.files).filter(([p, f]) => f.kind === 'script').map(([path, f]) => ({ path, code: f.text })); },
   writeText(path, text) {
+    if (kindOf(path) === 'script') text = cleanCode(text);
     const f = this.data.files[path];
     if (f) f.text = text; else this.data.files[path] = { kind: kindOf(path), text };
     this.ensureFolder(dirName(path));

@@ -4,7 +4,7 @@ import { EditorView, keymap, lineNumbers, highlightActiveLineGutter, highlightSp
   history, defaultKeymap, historyKeymap, indentWithTab, highlightSelectionMatches, searchKeymap, autocompletion, completionKeymap, closeBrackets, closeBracketsKeymap,
   lintKeymap, linter, lintGutter, forceLinting, csharp, tags as t } from '../../../vendor/codemirror.js';
 import { el, bus, toast } from '../core/events.js';
-import { project, fileName, kindOf } from '../core/project.js';
+import { project, fileName, kindOf, cleanCode } from '../core/project.js';
 
 const docs = new Map();   // path -> { view, dirty }
 const wrapComp = new Map(); // path -> Compartment (word wrap on/off)
@@ -117,6 +117,7 @@ function makeView(path, text) {
   const state = EditorState.create({
     doc: text,
     extensions: [
+      EditorView.clipboardInputFilter.of((t) => cleanCode(t)),
       lineNumbers(), highlightActiveLineGutter(), highlightSpecialChars(), history(), foldGutter(), drawSelection(), dropCursor(),
       EditorState.allowMultipleSelections.of(true), indentOnInput(), syntaxHighlighting(highlight), bracketMatching(), closeBrackets(),
       rectangularSelection(), crosshairCursor(), highlightActiveLine(), highlightSelectionMatches(), indentUnit.of('    '), EditorState.tabSize.of(4),
