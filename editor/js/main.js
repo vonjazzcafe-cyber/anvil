@@ -148,7 +148,9 @@ function warnClassFileMismatch(scripts) {
 }
 async function compileBeforePlay() {
   code.saveAll();
-  if (scriptsDirty || !lastCompileOk) return compileNow(true);
+  // a compile already running (e.g. started by Ctrl+S a moment ago) must finish first, or Play would start
+  // with the previous version of the scripts
+  if (compilePromise || scriptsDirty || !lastCompileOk) return compileNow(true);
   return !hasCompileErrors();
 }
 
