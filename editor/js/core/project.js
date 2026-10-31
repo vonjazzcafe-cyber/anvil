@@ -83,7 +83,7 @@ export function defaultSettings() {
     gravity: [0, -9.81, 0], fixedTimestep: 0.02, maxDeltaTime: 0.3333333, timeScale: 1,
     tags: [], layers: {}, layerMatrix: Array(32).fill(0xffffffff),
     inputHandling: 'new', scenes: ['Assets/Scenes/SampleScene.unity'], productName: 'My Project', executionOrder: {},
-    createAtOrigin: true, stackTraces: true,
+    createAtOrigin: true, stackTraces: true, physicsEngine: 'physx',
   };
 }
 
@@ -115,8 +115,8 @@ export function newProject(name) {
   };
 }
 
-export const KIND_BY_EXT = { cs: 'script', unity: 'scene', prefab: 'prefab', mat: 'material', physicMaterial: 'physicsMaterial', physicsMaterial: 'physicsMaterial', asset: 'asset', txt: 'text', json: 'text', md: 'text', csv: 'text', xml: 'text' };
-export function kindOf(path) { const ext = path.split('.').pop(); return KIND_BY_EXT[ext] || 'text'; }
+export const KIND_BY_EXT = { wav: 'audio', mp3: 'audio', ogg: 'audio', m4a: 'audio', png: 'texture', jpg: 'texture', jpeg: 'texture', gif: 'texture', webp: 'texture', glb: 'model', controller: 'controller', gltf: 'model', fbx: 'model', obj: 'model', stl: 'model', GLB: 'model', FBX: 'model', OBJ: 'model', cs: 'script', unity: 'scene', prefab: 'prefab', mat: 'material', physicMaterial: 'physicsMaterial', physicsMaterial: 'physicsMaterial', physicsMaterial2D: 'physicsMaterial2D', asset: 'asset', txt: 'text', json: 'text', md: 'text', csv: 'text', xml: 'text' };
+export function kindOf(path) { const ext = path.split('.').pop(); return KIND_BY_EXT[ext] || KIND_BY_EXT[ext.toLowerCase()] || 'text'; }
 export function baseName(path) { const f = path.split('/').pop(); const i = f.lastIndexOf('.'); return i > 0 ? f.slice(0, i) : f; }
 export function dirName(path) { const i = path.lastIndexOf('/'); return i > 0 ? path.slice(0, i) : ''; }
 export function fileName(path) { return path.split('/').pop(); }
@@ -225,10 +225,10 @@ export const project = {
   fixReferences(oldPath, newPath) {
     // asset references inside scenes/prefabs: {"asset": path} and material strings
     const fix = (v) => {
-      if (Array.isArray(v)) { v.forEach((x, i) => { if (typeof x === 'string' && (x === oldPath || x.startsWith(oldPath + '/'))) v[i] = newPath + x.slice(oldPath.length); else fix(x); }); return; }
+      if (Array.isArray(v)) { v.forEach((x, i) => { if (typeof x === 'string' && (x === oldPath || x.startsWith(oldPath + '/') || x.startsWith(oldPath + '#'))) v[i] = newPath + x.slice(oldPath.length); else fix(x); }); return; }
       if (v && typeof v === 'object') for (const k of Object.keys(v)) {
         const x = v[k];
-        if (typeof x === 'string' && (x === oldPath || x.startsWith(oldPath + '/')) && (k === 'asset' || k === 'material' || k === 'prefab')) v[k] = newPath + x.slice(oldPath.length);
+        if (typeof x === 'string' && (x === oldPath || x.startsWith(oldPath + '/') || x.startsWith(oldPath + '#'))) v[k] = newPath + x.slice(oldPath.length);
         else fix(x);
       }
     };

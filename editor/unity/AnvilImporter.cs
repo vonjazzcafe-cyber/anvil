@@ -11,6 +11,7 @@ using System.Linq;
 using System.Reflection;
 using System.Text;
 using UnityEditor;
+using UnityEditor.Animations;
 using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -63,7 +64,8 @@ namespace AnvilImport
 
             // project.anvil.json keeps every non-script asset in "files": { "Assets/...": { "kind": "scene", "data": {...} } }
             var scenes = new Dictionary<string, object>(); var prefabs = new Dictionary<string, object>();
-            var materials = new Dictionary<string, object>(); var physMats = new Dictionary<string, object>(); var assets = new Dictionary<string, object>();
+            var materials = new Dictionary<string, object>(); var physMats = new Dictionary<string, object>(); var physMats2D = new Dictionary<string, object>(); var assets = new Dictionary<string, object>();
+            var textures = new Dictionary<string, object>(); var audioFiles = new Dictionary<string, object>(); var models = new Dictionary<string, object>(); var controllers = new Dictionary<string, object>();
             foreach (var kv in Obj(root, "files"))
             {
                 if (!(kv.Value is Dictionary<string, object> f) || !f.TryGetValue("data", out var data) || !kv.Key.StartsWith("Assets/")) continue;
@@ -73,7 +75,12 @@ namespace AnvilImport
                     case "prefab": prefabs[kv.Key] = data; break;
                     case "material": materials[kv.Key] = data; break;
                     case "physicsMaterial": physMats[kv.Key] = data; break;
+                    case "physicsMaterial2D": physMats2D[kv.Key] = data; break;
                     case "asset": assets[kv.Key] = data; break;
+                    case "texture": textures[kv.Key] = data; break;
+                    case "audio": audioFiles[kv.Key] = data; break;
+                    case "model": models[kv.Key] = data; break;
+                    case "controller": controllers[kv.Key] = data; break;
                 }
             }
             if (interactive)
@@ -85,6 +92,44 @@ namespace AnvilImport
             }
 
             var ctx = new Ctx();
+            foreach (var kv in models) ctx.modelMeshNames[kv.Key] = List(kv.Value as Dictionary<string, object>, "meshes").Select(m => Str(m as Dictionary<string, object>, "name")).ToList();
+            // images (kept as data URLs in the project file): write the files Unity doesn't have yet, import them as sprites
+            if (textures.Count > 0 || audioFiles.Count > 0 || models.Count > 0)
+            {
+                foreach (var kv in textures.Concat(audioFiles).Concat(models))
+                {
+                    try
+                    {
+                        string url = Str(kv.Value as Dictionary<string, object>, "url");
+                        if (string.IsNullOrEmpty(url) || File.Exists(kv.Key)) continue;
+                        int comma = url.IndexOf(','); if (comma < 0) continue;
+                        Directory.CreateDirectory(Path.GetDirectoryName(kv.Key));
+                        File.WriteAllBytes(kv.Key, System.Convert.FromBase64String(url.Substring(comma + 1)));
+                    }
+                    catch (Exception e) { ctx.problems.Add($"Image {kv.Key}: {e.Message}"); }
+                }
+                AssetDatabase.Refresh();
+                // "Loop Time" on the model's clips
+                foreach (var kv in models)
+                {
+                    if (!(AssetImporter.GetAtPath(kv.Key) is ModelImporter mi)) continue;
+                    var loops = List(kv.Value as Dictionary<string, object>, "clips").Select(c => c as Dictionary<string, object>).Where(c => c != null && c.TryGetValue("loop", out var l) && l is bool lb && lb).Select(c => Str(c, "name")).ToList();
+                    if (loops.Count == 0) continue;
+                    var clips = mi.clipAnimations.Length > 0 ? mi.clipAnimations : mi.defaultClipAnimations;
+                    foreach (var ca in clips) if (loops.Contains(ca.name) || loops.Contains(ca.takeName)) ca.loopTime = true;
+                    mi.clipAnimations = clips; mi.SaveAndReimport();
+                }
+                foreach (var kv in models)
+                    if ((kv.Key.EndsWith(".glb", StringComparison.OrdinalIgnoreCase) || kv.Key.EndsWith(".gltf", StringComparison.OrdinalIgnoreCase)) && AssetDatabase.LoadMainAssetAtPath(kv.Key) as GameObject == null)
+                        ctx.problems.Add($"{kv.Key}: Unity needs the glTFast package (Window › Package Manager › + › Add package by name: com.unity.cloud.gltfast) to read .glb/.gltf files. Install it, then run the import again.");
+                foreach (var kv in textures)
+                    if ((kv.Value as Dictionary<string, object>)?.TryGetValue("sprite", out var spv) == true && spv is bool spb && !spb) continue;
+                    else if (AssetImporter.GetAtPath(kv.Key) is TextureImporter ti && ti.textureType != TextureImporterType.Sprite)
+                    {
+                        ti.textureType = TextureImporterType.Sprite; ti.spriteImportMode = SpriteImportMode.Single; ti.alphaIsTransparency = true;
+                        ti.SaveAndReimport();
+                    }
+            }
             try
             {
                 AssetDatabase.StartAssetEditing();
@@ -93,7 +138,9 @@ namespace AnvilImport
                     ApplySettings(Obj(root, "settings"), ctx);
                     foreach (var kv in materials) ctx.Material(kv.Key, kv.Value as Dictionary<string, object>);
                     foreach (var kv in physMats) ctx.PhysicsMaterial(kv.Key, kv.Value as Dictionary<string, object>);
+                    foreach (var kv in physMats2D) ctx.PhysicsMaterial2D(kv.Key, kv.Value as Dictionary<string, object>);
                     foreach (var kv in assets) ctx.CreateScriptable(kv.Key, kv.Value as Dictionary<string, object>);
+                    foreach (var kv in controllers) ctx.Controller(kv.Key, kv.Value as Dictionary<string, object>);
                 }
                 finally { AssetDatabase.StopAssetEditing(); }
                 AssetDatabase.SaveAssets();
@@ -143,6 +190,9 @@ namespace AnvilImport
             if (s.Count == 0) return;
             var g = List(s, "gravity");
             if (g.Count == 3) Physics.gravity = new Vector3(F(g[0]), F(g[1]), F(g[2]));
+            var g2 = List(s, "gravity2D");
+            var p2 = Ctx.Type2D("Physics2D");
+            if (g2.Count == 2 && p2 != null) p2.GetProperty("gravity")?.SetValue(null, new Vector2(F(g2[0]), F(g2[1])));
             if (s.TryGetValue("fixedTimestep", out var ft)) Time.fixedDeltaTime = F(ft);
             if (s.TryGetValue("maxDeltaTime", out var md)) Time.maximumDeltaTime = F(md);
             if (s.TryGetValue("timeScale", out var ts)) Time.timeScale = F(ts);
@@ -236,6 +286,19 @@ namespace AnvilImport
             public readonly List<string> problems = new List<string>();
             public int sceneCount, prefabCount, materialCount;
             readonly Dictionary<string, Mesh> meshes = new Dictionary<string, Mesh>();
+            public readonly Dictionary<string, List<string>> modelMeshNames = new Dictionary<string, List<string>>();
+            // "Assets/Robot.fbx#2": the model's mesh with that index (matched by name, like Unity names its sub-assets)
+            Mesh ModelMesh(string key)
+            {
+                int h = key.LastIndexOf('#');
+                string path = key.Substring(0, h);
+                int.TryParse(key.Substring(h + 1), out int idx);
+                var all = AssetDatabase.LoadAllAssetsAtPath(path).OfType<Mesh>().ToList();
+                if (all.Count == 0) { problems.Add($"No meshes found in {path}."); return null; }
+                string want = modelMeshNames.TryGetValue(path, out var names) && idx < names.Count ? names[idx] : null;
+                var m = (want != null ? all.FirstOrDefault(x => x.name == want) ?? all.FirstOrDefault(x => want.EndsWith(x.name) || x.name.EndsWith(want)) : null) ?? (idx < all.Count ? all[idx] : all[0]);
+                return m;
+            }
             readonly Dictionary<string, Material> colorMats = new Dictionary<string, Material>();
             Material defaultMat;
             Shader litShader; string colorProp = "_Color", smoothProp = "_Glossiness";
@@ -275,6 +338,8 @@ namespace AnvilImport
                 bool isNew = m == null;
                 if (isNew) m = new Material(litShader) { name = Path.GetFileNameWithoutExtension(path) };
                 ApplyMat(m, Col(d.TryGetValue("color", out var c) ? c : null, Color.white), d.TryGetValue("metallic", out var me) ? F(me) : 0f, d.TryGetValue("smoothness", out var sm) ? F(sm) : 0.5f);
+                string tex = Str(d, "texture");
+                if (!string.IsNullOrEmpty(tex)) { var t2 = AssetDatabase.LoadAssetAtPath<Texture2D>(tex); if (t2 != null) m.mainTexture = t2; else problems.Add($"Material '{m.name}': texture {tex} not found."); }
                 if (isNew) AssetDatabase.CreateAsset(m, path); else EditorUtility.SetDirty(m);
                 materialCount++;
             }
@@ -290,6 +355,21 @@ namespace AnvilImport
                 if (d.TryGetValue("bounciness", out var bo)) pm.bounciness = F(bo);
                 if (d.TryGetValue("frictionCombine", out var fc)) pm.frictionCombine = (PhysCombine)I(fc);
                 if (d.TryGetValue("bounceCombine", out var bc)) pm.bounceCombine = (PhysCombine)I(bc);
+                if (isNew) AssetDatabase.CreateAsset(pm, path); else EditorUtility.SetDirty(pm);
+            }
+            // 2D physics types live in the Physics2D module; found by name so this file compiles without it
+            internal static Type Type2D(string name) => Type.GetType("UnityEngine." + name + ", UnityEngine.Physics2DModule") ?? Type.GetType("UnityEngine." + name + ", UnityEngine");
+            public void PhysicsMaterial2D(string path, Dictionary<string, object> d)
+            {
+                if (d == null) return;
+                var t = Type2D("PhysicsMaterial2D");
+                if (t == null) { problems.Add("2D physics module is disabled (Package Manager > Built-in > Physics 2D): " + path + " was skipped."); return; }
+                EnsureFolder(path);
+                var pm = AssetDatabase.LoadAssetAtPath(path, t);
+                bool isNew = pm == null;
+                if (isNew) { pm = (Object)Activator.CreateInstance(t); pm.name = Path.GetFileNameWithoutExtension(path); }
+                if (d.TryGetValue("friction", out var fr)) t.GetProperty("friction")?.SetValue(pm, F(fr));
+                if (d.TryGetValue("bounciness", out var bo)) t.GetProperty("bounciness")?.SetValue(pm, F(bo));
                 if (isNew) AssetDatabase.CreateAsset(pm, path); else EditorUtility.SetDirty(pm);
             }
             public void CreateScriptable(string path, Dictionary<string, object> d)
@@ -314,10 +394,116 @@ namespace AnvilImport
                 EditorUtility.SetDirty(so);
             }
 
+            // "Assets/Robot.fbx#clip0": the model's clips in file order (Unity's hidden __preview__ clips skipped)
+            public AnimationClip ModelClip(string key)
+            {
+                if (string.IsNullOrEmpty(key)) return null;
+                int h = key.LastIndexOf("#clip");
+                if (h < 0) return AssetDatabase.LoadAssetAtPath<AnimationClip>(key);
+                string path = key.Substring(0, h);
+                int.TryParse(key.Substring(h + 5), out int idx);
+                var all = AssetDatabase.LoadAllAssetsAtPath(path).OfType<AnimationClip>().Where(c => !c.name.StartsWith("__preview__")).ToList();
+                if (all.Count == 0) { problems.Add($"No animation clips found in {path}."); return null; }
+                return idx < all.Count ? all[idx] : all[0];
+            }
+            public void Controller(string path, Dictionary<string, object> d)
+            {
+                if (d == null) return;
+                AssetDatabase.DeleteAsset(path);
+                var ac = AnimatorController.CreateAnimatorControllerAtPath(path);
+                var types = new Dictionary<string, AnimatorControllerParameterType>();
+                foreach (var po in List(d, "parameters"))
+                {
+                    var p = po as Dictionary<string, object>; if (p == null) continue;
+                    string t = Str(p, "type") ?? "Float";
+                    var pt = t == "Int" ? AnimatorControllerParameterType.Int : t == "Bool" ? AnimatorControllerParameterType.Bool : t == "Trigger" ? AnimatorControllerParameterType.Trigger : AnimatorControllerParameterType.Float;
+                    string name = Str(p, "name"); if (string.IsNullOrEmpty(name)) continue;
+                    var acp = new AnimatorControllerParameter { name = name, type = pt };
+                    if (p.TryGetValue("default", out var dv)) { if (pt == AnimatorControllerParameterType.Bool) acp.defaultBool = B(dv); else if (pt == AnimatorControllerParameterType.Int) acp.defaultInt = I(dv); else if (pt == AnimatorControllerParameterType.Float) acp.defaultFloat = F(dv); }
+                    ac.AddParameter(acp); types[name] = pt;
+                }
+                var layersJson = List(d, "layers");
+                for (int li = 0; li < layersJson.Count; li++)
+                {
+                    var L = layersJson[li] as Dictionary<string, object>; if (L == null) continue;
+                    if (li > 0) ac.AddLayer(Str(L, "name") ?? ("Layer " + li));
+                    var layers = ac.layers;
+                    if (li > 0) { layers[li].defaultWeight = L.ContainsKey("weight") ? F(L["weight"]) : 1f; layers[li].blendingMode = Str(L, "blending") == "Additive" ? AnimatorLayerBlendingMode.Additive : AnimatorLayerBlendingMode.Override; ac.layers = layers; }
+                    var sm = ac.layers[li].stateMachine;
+                    var states = new Dictionary<string, AnimatorState>();
+                    var stateJson = List(L, "states").Select(x => x as Dictionary<string, object>).Where(x => x != null).ToList();
+                    int k = 0;
+                    foreach (var s in stateJson)
+                    {
+                        string name = Str(s, "name") ?? "State";
+                        var pos = new Vector3(300 + 220 * (k % 3), 60 * (k / 3) + 60, 0); k++;
+                        AnimatorState st;
+                        if (s.TryGetValue("blendTree", out var btv) && btv is Dictionary<string, object> bt)
+                        {
+                            st = sm.AddState(name, pos);
+                            var tree = new BlendTree { name = name, blendType = BlendTreeType.Simple1D, useAutomaticThresholds = false, hideFlags = HideFlags.HideInHierarchy };
+                            AssetDatabase.AddObjectToAsset(tree, ac);
+                            tree.blendParameter = Str(bt, "param") ?? "";
+                            foreach (var co in List(bt, "children")) { var c = co as Dictionary<string, object>; if (c == null) continue; tree.AddChild(ModelClip(Str(c, "motion")), c.ContainsKey("threshold") ? F(c["threshold"]) : 0f); }
+                            st.motion = tree;
+                        }
+                        else { st = sm.AddState(name, pos); st.motion = ModelClip(Str(s, "motion")); }
+                        if (s.ContainsKey("speed")) st.speed = F(s["speed"]);
+                        string sp = Str(s, "speedParam"); if (!string.IsNullOrEmpty(sp)) { st.speedParameter = sp; st.speedParameterActive = true; }
+                        if (s.ContainsKey("cycleOffset")) st.cycleOffset = F(s["cycleOffset"]);
+                        st.tag = Str(s, "tag") ?? "";
+                        foreach (var bn in List(s, "behaviours"))
+                        {
+                            var bt2 = bn is string bs ? AppDomain.CurrentDomain.GetAssemblies().Select(a => a.GetType(bs)).FirstOrDefault(t => t != null) : null;
+                            if (bt2 != null && typeof(StateMachineBehaviour).IsAssignableFrom(bt2)) st.AddStateMachineBehaviour(bt2); else problems.Add($"Controller {path}: StateMachineBehaviour '{bn}' not found.");
+                        }
+                        states[name] = st;
+                    }
+                    string def = Str(L, "defaultState");
+                    if (def != null && states.TryGetValue(def, out var ds)) sm.defaultState = ds;
+                    void Fill(AnimatorStateTransition tr, Dictionary<string, object> t)
+                    {
+                        tr.hasExitTime = t.TryGetValue("hasExitTime", out var he) && B(he);
+                        tr.exitTime = t.ContainsKey("exitTime") ? F(t["exitTime"]) : 0.75f;
+                        tr.hasFixedDuration = !t.ContainsKey("fixedDuration") || B(t["fixedDuration"]);
+                        tr.duration = t.ContainsKey("duration") ? F(t["duration"]) : 0.25f;
+                        tr.offset = t.ContainsKey("offset") ? F(t["offset"]) : 0f;
+                        foreach (var co in List(t, "conditions"))
+                        {
+                            var c = co as Dictionary<string, object>; if (c == null) continue;
+                            string m = Str(c, "mode") ?? "If";
+                            var mode = m == "IfNot" ? AnimatorConditionMode.IfNot : m == "Greater" ? AnimatorConditionMode.Greater : m == "Less" ? AnimatorConditionMode.Less : m == "Equals" ? AnimatorConditionMode.Equals : m == "NotEqual" ? AnimatorConditionMode.NotEqual : AnimatorConditionMode.If;
+                            tr.AddCondition(mode, c.ContainsKey("threshold") ? F(c["threshold"]) : 0f, Str(c, "param") ?? "");
+                        }
+                    }
+                    foreach (var s in stateJson)
+                    {
+                        var from = states[Str(s, "name") ?? "State"];
+                        foreach (var to in List(s, "transitions"))
+                        {
+                            var t = to as Dictionary<string, object>; if (t == null) continue;
+                            AnimatorStateTransition tr;
+                            if (t.TryGetValue("exit", out var ex) && B(ex)) tr = from.AddExitTransition();
+                            else if (Str(t, "to") is string dest && states.TryGetValue(dest, out var dst)) tr = from.AddTransition(dst);
+                            else continue;
+                            Fill(tr, t);
+                        }
+                    }
+                    foreach (var to in List(L, "anyState"))
+                    {
+                        var t = to as Dictionary<string, object>; if (t == null || !(Str(t, "to") is string dest) || !states.TryGetValue(dest, out var dst)) continue;
+                        var tr = sm.AddAnyStateTransition(dst);
+                        Fill(tr, t);
+                        tr.canTransitionToSelf = !t.ContainsKey("canTransitionToSelf") || B(t["canTransitionToSelf"]);
+                    }
+                }
+                EditorUtility.SetDirty(ac);
+            }
             public Mesh BuiltinMesh(string name)
             {
                 if (string.IsNullOrEmpty(name)) name = "Cube";
                 if (meshes.TryGetValue(name, out var m)) return m;
+                if (name.IndexOf('#') > 0) return meshes[name] = ModelMesh(name);
                 PrimitiveType pt;
                 switch (name)
                 {
@@ -392,6 +578,7 @@ namespace AnvilImport
                 {
                     if (!(item is Dictionary<string, object> o)) continue;
                     var go = new GameObject(Str(o, "name") ?? "GameObject");
+                    if (List(o, "comps").Any(ci => ci is Dictionary<string, object> cd && Str(cd, "type") == "RectTransform")) go.AddComponent<RectTransform>();
                     byId[I(o.TryGetValue("id", out var id) ? id : 0)] = go;
                     data.Add((o, go));
                 }
@@ -408,6 +595,14 @@ namespace AnvilImport
                     var rr = List(o, "r"); if (rr.Count == 4) t.localRotation = new Quaternion(F(rr[0]), F(rr[1]), F(rr[2]), F(rr[3])).normalized;
                     var ee = List(o, "e"); if (ee.Count == 3) SetInspectorEuler(t, V3(ee));
                     var ss = List(o, "s"); if (ss.Count == 3) t.localScale = V3(ss);
+                    if (t is RectTransform rt)
+                        foreach (var ci in List(o, "comps"))
+                            if (ci is Dictionary<string, object> cd && Str(cd, "type") == "RectTransform")
+                            {
+                                Vector2 V2(string k, Vector2 d) { var l = List(cd, k); return l.Count >= 2 ? new Vector2(F(l[0]), F(l[1])) : d; }
+                                rt.anchorMin = V2("anchorMin", rt.anchorMin); rt.anchorMax = V2("anchorMax", rt.anchorMax); rt.pivot = V2("pivot", rt.pivot);
+                                rt.sizeDelta = V2("sizeDelta", rt.sizeDelta); rt.anchoredPosition = V2("anchoredPosition", rt.anchoredPosition);
+                            }
                     string tag = Str(o, "tag");
                     if (!string.IsNullOrEmpty(tag) && tag != "Untagged") { try { go.tag = tag; } catch { problems.Add($"Tag '{tag}' does not exist (object '{go.name}')."); } }
                     go.layer = I(o.TryGetValue("layer", out var l) ? l : 0);
@@ -442,7 +637,7 @@ namespace AnvilImport
             Component AddComponent(GameObject go, Dictionary<string, object> c, HashSet<Component> claimed)
             {
                 string type = Str(c, "type");
-                if (type == null || type == "Transform") return null;
+                if (type == null || type == "Transform" || type == "RectTransform") return null;
                 Type t;
                 if (type == "Script")
                 {
@@ -468,6 +663,9 @@ namespace AnvilImport
                 {
                     case "MeshFilter": return typeof(MeshFilter);
                     case "MeshRenderer": return typeof(MeshRenderer);
+                    case "SkinnedMeshRenderer": return typeof(SkinnedMeshRenderer);
+                    case "Animator": return typeof(Animator);
+                    case "Animation": return typeof(Animation);
                     case "BoxCollider": return typeof(BoxCollider);
                     case "SphereCollider": return typeof(SphereCollider);
                     case "CapsuleCollider": return typeof(CapsuleCollider);
@@ -484,7 +682,7 @@ namespace AnvilImport
                     case "AudioListener": return typeof(AudioListener);
                     case "AudioSource": return typeof(AudioSource);
                 }
-                return typeof(Rigidbody).Assembly.GetType("UnityEngine." + name) ?? typeof(Camera).Assembly.GetType("UnityEngine." + name);
+                return typeof(Rigidbody).Assembly.GetType("UnityEngine." + name) ?? typeof(Camera).Assembly.GetType("UnityEngine." + name) ?? (name.EndsWith("2D") ? Ctx.Type2D(name) : null);
             }
 
             void Apply(Pending p, Dictionary<int, GameObject> byId)
@@ -502,9 +700,46 @@ namespace AnvilImport
                                 Material m = mat != null ? AssetDatabase.LoadAssetAtPath<Material>(mat) : null;
                                 if (mat != null && m == null) problems.Add($"Material {mat} not found ('{p.go.name}').");
                                 mr.sharedMaterial = m != null ? m : ColorMat(Col(c.TryGetValue("color", out var col) ? col : null, Color.white));
+                                var mlist = List(c, "materials");
+                                if (mlist.Count > 1) mr.sharedMaterials = mlist.Select(x => x is string ms ? AssetDatabase.LoadAssetAtPath<Material>(ms) : null).Select(x => x != null ? x : DefaultMat()).ToArray();
                                 if (c.ContainsKey("shadowCastingMode")) mr.shadowCastingMode = (ShadowCastingMode)I(c["shadowCastingMode"]);
                                 if (c.ContainsKey("receiveShadows")) mr.receiveShadows = B(c["receiveShadows"]);
                                 mr.enabled = enabled;
+                                break;
+                            }
+                        case SkinnedMeshRenderer smr:
+                            {
+                                smr.sharedMesh = BuiltinMesh(Str(c, "mesh"));
+                                var mlist = List(c, "materials");
+                                if (mlist.Count > 0) smr.sharedMaterials = mlist.Select(x => x is string ms ? AssetDatabase.LoadAssetAtPath<Material>(ms) : null).Select(x => x != null ? x : DefaultMat()).ToArray();
+                                Transform RefT(object r) => r is Dictionary<string, object> rd && rd.TryGetValue("ref", out var id) && byId.TryGetValue(I(id), out var g) ? g.transform : null;
+                                if (c.ContainsKey("bones")) smr.bones = List(c, "bones").Select(RefT).ToArray();
+                                if (c.TryGetValue("rootBone", out var rb)) smr.rootBone = RefT(rb);
+                                if (c.ContainsKey("shadowCastingMode")) smr.shadowCastingMode = (ShadowCastingMode)I(c["shadowCastingMode"]);
+                                if (c.ContainsKey("receiveShadows")) smr.receiveShadows = B(c["receiveShadows"]);
+                                if (c.ContainsKey("updateWhenOffscreen")) smr.updateWhenOffscreen = B(c["updateWhenOffscreen"]);
+                                smr.enabled = enabled;
+                                break;
+                            }
+                        case Animator anim:
+                            {
+                                string cp = Str(c, "controller");
+                                if (cp != null) { anim.runtimeAnimatorController = AssetDatabase.LoadAssetAtPath<RuntimeAnimatorController>(cp); if (anim.runtimeAnimatorController == null) problems.Add($"Animator Controller {cp} not found ('{p.go.name}')."); }
+                                if (c.ContainsKey("applyRootMotion")) anim.applyRootMotion = B(c["applyRootMotion"]);
+                                if (c.ContainsKey("updateMode")) anim.updateMode = (AnimatorUpdateMode)I(c["updateMode"]);
+                                if (c.ContainsKey("cullingMode")) anim.cullingMode = (AnimatorCullingMode)I(c["cullingMode"]);
+                                anim.enabled = enabled;
+                                break;
+                            }
+                        case Animation legacyAnim:
+                            {
+                                var main = ModelClip(Str(c, "clip"));
+                                foreach (var ck in List(c, "clips")) { var cl = ModelClip(ck as string); if (cl != null && legacyAnim.GetClip(cl.name) == null) legacyAnim.AddClip(cl, cl.name); }
+                                if (main != null) { if (!main.legacy) problems.Add($"'{p.go.name}': the Animation component needs Legacy clips. Select the model, Rig tab, Animation Type: Legacy."); legacyAnim.clip = main; if (legacyAnim.GetClip(main.name) == null) legacyAnim.AddClip(main, main.name); }
+                                if (c.ContainsKey("playAutomatically")) legacyAnim.playAutomatically = B(c["playAutomatically"]);
+                                if (c.ContainsKey("animatePhysics")) legacyAnim.animatePhysics = B(c["animatePhysics"]);
+                                if (c.ContainsKey("cullingType")) legacyAnim.cullingType = (AnimationCullingType)I(c["cullingType"]);
+                                legacyAnim.enabled = enabled;
                                 break;
                             }
                         case CharacterController ch:
@@ -646,7 +881,19 @@ namespace AnvilImport
                             if (c.ContainsKey("volume")) src.volume = F(c["volume"]);
                             if (c.ContainsKey("pitch")) src.pitch = F(c["pitch"]);
                             if (c.ContainsKey("spatialBlend")) src.spatialBlend = F(c["spatialBlend"]);
+                            if (c.ContainsKey("minDistance")) src.minDistance = F(c["minDistance"]);
+                            if (c.ContainsKey("maxDistance")) src.maxDistance = F(c["maxDistance"]);
+                            { string clip = Str(c, "clip"); if (!string.IsNullOrEmpty(clip)) { src.clip = AssetDatabase.LoadAssetAtPath<AudioClip>(clip); if (src.clip == null) problems.Add($"AudioClip {clip} not found ('{p.go.name}')."); } }
                             src.enabled = enabled;
+                            break;
+                        case Component c2d when c2d.GetType().Namespace == "UnityEngine" && (c2d.GetType().Name.EndsWith("2D") || c2d is SpriteRenderer):
+                            // 2D physics and sprites: values by C# property name
+                            ApplyProps(c2d, c, byId, p.go.name);
+                            if (c2d is Behaviour b2d) b2d.enabled = enabled;
+                            break;
+                        case Component ui when IsUiType(ui.GetType()):
+                            ApplyProps(ui, c, byId, p.go.name);
+                            if (ui is Behaviour uib) uib.enabled = enabled;
                             break;
                         case MonoBehaviour pin when pin.GetType().Name == "PlayerInput" && pin.GetType().Namespace == "UnityEngine.InputSystem":
                             {
@@ -665,7 +912,25 @@ namespace AnvilImport
                         case MonoBehaviour mb:
                             {
                                 var ser = new SerializedObject(mb);
-                                foreach (var kv in Obj(c, "fields")) SetField(ser, ser.FindProperty(kv.Key), kv.Value, byId, p.go.name + "." + mb.GetType().Name + "." + kv.Key);
+                                foreach (var kv in Obj(c, "fields"))
+                                {
+                                    // UnityEvent fields hold Inspector listeners: [{target, comp, method, mode, arg}]
+                                    var efi = mb.GetType().GetField(kv.Key, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.FlattenHierarchy);
+                                    if (efi != null && typeof(UnityEngine.Events.UnityEventBase).IsAssignableFrom(efi.FieldType))
+                                    {
+                                        if (kv.Value is List<object> calls)
+                                        {
+                                            ser.ApplyModifiedPropertiesWithoutUndo();
+                                            var ev = efi.GetValue(mb) as UnityEngine.Events.UnityEventBase;
+                                            if (ev == null) { ev = (UnityEngine.Events.UnityEventBase)Activator.CreateInstance(efi.FieldType); efi.SetValue(mb, ev); }
+                                            AddListeners(ev, calls, byId, p.go.name + "." + kv.Key);
+                                            EditorUtility.SetDirty(mb);
+                                            ser.Update();
+                                        }
+                                        continue;
+                                    }
+                                    SetField(ser, ser.FindProperty(kv.Key), kv.Value, byId, p.go.name + "." + mb.GetType().Name + "." + kv.Key);
+                                }
                                 ser.ApplyModifiedPropertiesWithoutUndo();
                                 mb.enabled = enabled;
                                 break;
@@ -673,6 +938,140 @@ namespace AnvilImport
                     }
                 }
                 catch (Exception e) { problems.Add($"{comp.GetType().Name} on '{p.go.name}': {e.Message}"); }
+            }
+
+            // ---------- uGUI / TextMesh Pro components (values by C# property name) ----------
+            static bool IsUiType(Type t)
+            {
+                string ns = t.Namespace ?? "";
+                return ns == "UnityEngine.UI" || ns == "TMPro" || ns == "UnityEngine.EventSystems" || ns == "UnityEngine.InputSystem.UI" || t == typeof(Canvas) || t == typeof(CanvasGroup) || t == typeof(CanvasRenderer);
+            }
+            void ApplyProps(Component comp, Dictionary<string, object> c, Dictionary<int, GameObject> byId, string where)
+            {
+                var t = comp.GetType();
+                foreach (var kv in c)
+                {
+                    if (kv.Key == "type" || kv.Key == "enabled" || kv.Key == "script") continue;
+                    string name = kv.Key == "imageType" ? "type" : kv.Key;
+                    var pi = t.GetProperty(name, BindingFlags.Instance | BindingFlags.Public);
+                    if (pi == null) continue;
+                    try
+                    {
+                        if (typeof(UnityEngine.Events.UnityEventBase).IsAssignableFrom(pi.PropertyType))
+                        {
+                            if (kv.Value is List<object> calls) { var ev = pi.GetValue(comp) as UnityEngine.Events.UnityEventBase; if (ev != null) AddListeners(ev, calls, byId, where + "." + name); }
+                            continue;
+                        }
+                        if (!pi.CanWrite) continue;
+                        var v = ConvertValue(kv.Value, pi.PropertyType, byId);
+                        if (v == null && pi.PropertyType.IsValueType) continue;
+                        pi.SetValue(comp, v);
+                    }
+                    catch (Exception e) { problems.Add($"{t.Name}.{name} on '{where}': {(e.InnerException ?? e).Message}"); }
+                }
+                EditorUtility.SetDirty(comp);
+            }
+            object ConvertValue(object v, Type t, Dictionary<int, GameObject> byId)
+            {
+                if (t == typeof(float)) return F(v);
+                if (t == typeof(int)) return I(v);
+                if (t == typeof(bool)) return B(v);
+                if (t == typeof(string)) return v as string ?? "";
+                if (t.IsEnum) return Enum.ToObject(t, (long)Num(v));
+                if (t == typeof(Color)) return Col(v, Color.white);
+                if (t == typeof(Color32)) return (Color32)Col(v, Color.white);
+                if (t == typeof(Vector2)) { var l = List(v); return new Vector2(F(At(l, 0)), F(At(l, 1))); }
+                if (t == typeof(Vector3)) return V3(List(v));
+                if (t == typeof(Vector4)) { var l = List(v); return new Vector4(F(At(l, 0)), F(At(l, 1)), F(At(l, 2)), F(At(l, 3))); }
+                if (t == typeof(Vector2Int)) { var l = List(v); return new Vector2Int(I(At(l, 0)), I(At(l, 1))); }
+                if (t == typeof(Rect)) { var l = List(v); return new Rect(F(At(l, 0)), F(At(l, 1)), F(At(l, 2)), F(At(l, 3))); }
+                if (typeof(Object).IsAssignableFrom(t)) return v is string apath ? AssetDatabase.LoadAssetAtPath(apath, t) : Ref(v, t, byId);
+                if (v is List<object> arr && t.IsArray)
+                {
+                    var et = t.GetElementType();
+                    var res = Array.CreateInstance(et, arr.Count);
+                    for (int i = 0; i < arr.Count; i++) res.SetValue(ConvertValue(arr[i], et, byId), i);
+                    return res;
+                }
+                if (v is List<object> list && t.IsGenericType && t.GetGenericTypeDefinition() == typeof(List<>))
+                {
+                    var et = t.GetGenericArguments()[0];
+                    var res = (System.Collections.IList)Activator.CreateInstance(t);
+                    foreach (var item in list) res.Add(ConvertValue(item, et, byId));
+                    return res;
+                }
+                if (v is Dictionary<string, object> d)
+                {
+                    object o = t == typeof(UnityEngine.UI.ColorBlock) ? UnityEngine.UI.ColorBlock.defaultColorBlock : Activator.CreateInstance(t);
+                    foreach (var kv in d)
+                    {
+                        var pi = t.GetProperty(kv.Key, BindingFlags.Instance | BindingFlags.Public);
+                        if (pi != null && pi.CanWrite) { var pv = ConvertValue(kv.Value, pi.PropertyType, byId); if (pv != null || !pi.PropertyType.IsValueType) pi.SetValue(o, pv); continue; }
+                        var fi = t.GetField(kv.Key, BindingFlags.Instance | BindingFlags.Public);
+                        if (fi != null) { var fv = ConvertValue(kv.Value, fi.FieldType, byId); if (fv != null || !fi.FieldType.IsValueType) fi.SetValue(o, fv); }
+                    }
+                    return o;
+                }
+                return null;
+            }
+            // Inspector listeners → Unity persistent listeners (UnityEventTools)
+            void AddListeners(UnityEngine.Events.UnityEventBase ev, List<object> calls, Dictionary<int, GameObject> byId, string where)
+            {
+                var tools = typeof(UnityEditor.Events.UnityEventTools);
+                foreach (var item in calls)
+                {
+                    if (!(item is Dictionary<string, object> call)) continue;
+                    string method = Str(call, "method"); if (string.IsNullOrEmpty(method)) continue;
+                    var tgo = Ref(call.TryGetValue("target", out var tv) ? tv : null, typeof(GameObject), byId) as GameObject;
+                    if (tgo == null) { problems.Add($"{where}: the listener target for '{method}' is missing."); continue; }
+                    string compName = Str(call, "comp");
+                    Object target = string.IsNullOrEmpty(compName) || compName == "GameObject" ? (Object)tgo : tgo.GetComponents<Component>().FirstOrDefault(x => x != null && x.GetType().Name == compName);
+                    if (target == null) { problems.Add($"{where}: component {compName} not found on '{tgo.name}'."); continue; }
+                    int mode = call.TryGetValue("mode", out var mv) ? I(mv) : 1;
+                    var tt = target.GetType();
+                    MethodInfo mi = null;
+                    Type argType = mode switch { 2 => typeof(Object), 3 => typeof(int), 4 => typeof(float), 5 => typeof(string), 6 => typeof(bool), _ => null };
+                    var evArgs = ev.GetType().BaseType != null && ev.GetType().BaseType.IsGenericType ? ev.GetType().BaseType.GetGenericArguments() : Type.EmptyTypes;
+                    foreach (var m in tt.GetMethods(BindingFlags.Instance | BindingFlags.Public))
+                    {
+                        if (m.Name != method && m.Name != "set_" + method) continue;
+                        var ps = m.GetParameters();
+                        if (mode == 1 && ps.Length == 0) { mi = m; break; }
+                        if (mode == 0 && ps.Length == evArgs.Length && ps.Select(x => x.ParameterType).SequenceEqual(evArgs)) { mi = m; break; }
+                        if (argType != null && ps.Length == 1 && (ps[0].ParameterType == argType || (mode == 2 && typeof(Object).IsAssignableFrom(ps[0].ParameterType)))) { mi = m; break; }
+                    }
+                    if (mi == null) { problems.Add($"{where}: method {tt.Name}.{method} not found."); continue; }
+                    try
+                    {
+                        object arg = call.TryGetValue("arg", out var av) ? av : null;
+                        switch (mode)
+                        {
+                            case 1: UnityEditor.Events.UnityEventTools.AddVoidPersistentListener(ev, (UnityEngine.Events.UnityAction)Delegate.CreateDelegate(typeof(UnityEngine.Events.UnityAction), target, mi)); break;
+                            case 3: UnityEditor.Events.UnityEventTools.AddIntPersistentListener(ev, (UnityEngine.Events.UnityAction<int>)Delegate.CreateDelegate(typeof(UnityEngine.Events.UnityAction<int>), target, mi), I(arg ?? 0)); break;
+                            case 4: UnityEditor.Events.UnityEventTools.AddFloatPersistentListener(ev, (UnityEngine.Events.UnityAction<float>)Delegate.CreateDelegate(typeof(UnityEngine.Events.UnityAction<float>), target, mi), F(arg ?? 0)); break;
+                            case 5: UnityEditor.Events.UnityEventTools.AddStringPersistentListener(ev, (UnityEngine.Events.UnityAction<string>)Delegate.CreateDelegate(typeof(UnityEngine.Events.UnityAction<string>), target, mi), arg as string ?? ""); break;
+                            case 6: UnityEditor.Events.UnityEventTools.AddBoolPersistentListener(ev, (UnityEngine.Events.UnityAction<bool>)Delegate.CreateDelegate(typeof(UnityEngine.Events.UnityAction<bool>), target, mi), B(arg ?? false)); break;
+                            case 2:
+                                {
+                                    var pt = mi.GetParameters()[0].ParameterType;
+                                    var del = Delegate.CreateDelegate(typeof(UnityEngine.Events.UnityAction<>).MakeGenericType(pt), target, mi);
+                                    var gm = tools.GetMethods().First(m => m.Name == "AddObjectPersistentListener" && m.IsGenericMethodDefinition).MakeGenericMethod(pt);
+                                    gm.Invoke(null, new object[] { ev, del, Ref(arg, pt, byId) });
+                                    break;
+                                }
+                            default:
+                                {
+                                    if (evArgs.Length == 0) { UnityEditor.Events.UnityEventTools.AddPersistentListener((UnityEngine.Events.UnityEvent)ev, (UnityEngine.Events.UnityAction)Delegate.CreateDelegate(typeof(UnityEngine.Events.UnityAction), target, mi)); break; }
+                                    var actionType = evArgs.Length == 1 ? typeof(UnityEngine.Events.UnityAction<>).MakeGenericType(evArgs) : evArgs.Length == 2 ? typeof(UnityEngine.Events.UnityAction<,>).MakeGenericType(evArgs) : typeof(UnityEngine.Events.UnityAction<,,>).MakeGenericType(evArgs);
+                                    var del = Delegate.CreateDelegate(actionType, target, mi);
+                                    var gm = tools.GetMethods().First(m => m.Name == "AddPersistentListener" && m.IsGenericMethodDefinition && m.GetGenericArguments().Length == evArgs.Length).MakeGenericMethod(evArgs);
+                                    gm.Invoke(null, new object[] { ev, del });
+                                    break;
+                                }
+                        }
+                    }
+                    catch (Exception e) { problems.Add($"{where}: could not add listener {method}: {(e.InnerException ?? e).Message}"); }
+                }
             }
 
             // ---------- serialized script fields ----------

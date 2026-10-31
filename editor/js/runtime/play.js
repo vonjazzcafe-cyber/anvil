@@ -3,9 +3,12 @@ import { bus, toast, el } from '../core/events.js';
 import { editor } from '../core/scene.js';
 import { project, baseName } from '../core/project.js';
 import { engine } from './engine.js';
-import { drawGui, clearGui } from './gui.js';
+import { drawGui, clearGui, setGuiTextureSource } from './gui.js';
+import { applyAudio, uploadClip, stopAllAudio, setAudioPaused, unlockAudio } from './audio.js';
 import { log, onPlayStart } from '../ui/console.js';
 import { COMPONENTS, defaultFieldValue } from '../core/components.js';
+import { ensureModels } from '../core/models.js';
+import { usePhysicsEngine } from './engine.js';
 
 let viewport = null;
 let raf = 0, lastT = 0;
@@ -18,6 +21,7 @@ let wasMode = 'scene';
 
 export function initPlay(vp) {
   viewport = vp;
+  setGuiTextureSource((uid) => viewport.rt.textureURL(uid));
   const canvasHost = document.getElementById('game-host');
   const hint = document.getElementById('game-hint');
   // focus handling: clicking the Game view gives it the keyboard
@@ -81,15 +85,20 @@ export function buildPayload() {
   const cur = baseName(editor.scenePath);
   const inBuild = build.includes(editor.scenePath);
   if (!names.includes(cur)) { names.unshift(cur); }
-  const prefabs = {}, materials = {}, physicsMaterials = {}, assets = {}, texts = {};
+  const prefabs = {}, materials = {}, physicsMaterials = {}, physicsMaterials2D = {}, assets = {}, texts = {}, textures = {}, audio = {}, models = {}, controllers = {};
   const referenced = new Set();
   const collectRefs = (v) => { if (Array.isArray(v)) v.forEach(collectRefs); else if (v && typeof v === 'object') { if (typeof v.asset === 'string') referenced.add(v.asset); for (const x of Object.values(v)) collectRefs(x); } };
   for (const [p, f] of Object.entries(files)) {
     if (f.kind === 'prefab') { prefabs[p] = { objects: compactObjects(f.data.objects || []), nextId: f.data.nextId }; collectRefs(f.data); }
     else if (f.kind === 'material') materials[p] = f.data;
     else if (f.kind === 'physicsMaterial') physicsMaterials[p] = f.data;
+    else if (f.kind === 'physicsMaterial2D') physicsMaterials2D[p] = f.data;
     else if (f.kind === 'asset') { assets[p] = f.data; collectRefs(f.data); }
     else if (f.kind === 'scene') collectRefs(f.data);
+    else if (f.kind === 'texture') textures[p] = { w: f.data?.w || 1, h: f.data?.h || 1 };
+    else if (f.kind === 'controller') controllers[p] = f.data || {};
+    else if (f.kind === 'model') { models[p] = { meshes: f.data?.meshes || [], clips: f.data?.clips || [] }; prefabs[p] = { objects: compactObjects(f.data?.objects || []), nextId: f.data?.nextId }; }
+    else if (f.kind === 'audio') audio[p] = { len: f.data?.len || 0, ch: f.data?.ch || 2, freq: f.data?.freq || 44100 };
   }
   for (const [p, f] of Object.entries(files)) {
     if (f.kind !== 'text') continue;
@@ -104,7 +113,7 @@ export function buildPayload() {
       productName: s.productName, executionOrder: s.executionOrder, screen: [w, h], stackTraces: s.stackTraces !== false,
     },
     scene: inBuild ? { name: cur } : { name: cur, objects: compactObjects(editor.objects) },
-    scenes, prefabs, materials, physicsMaterials, assets, texts,
+    scenes, prefabs, materials, physicsMaterials, physicsMaterials2D, assets, texts, textures, audio, models, controllers,
     projectInputActions: files['Assets/InputSystem_Actions.inputactions'] ? 'Assets/InputSystem_Actions.inputactions' : null,
     playerPrefs: project.data.playerPrefs || {},
   };
@@ -116,7 +125,7 @@ function compactObjects(objects) { if (window.__noCompact) return objects;
     delete c.e;
     c.comps = o.comps.map(comp => {
       const def = COMPONENTS[comp.type];
-      if (!def) return comp;
+      if (!def || def.full) return comp;
       const out = { type: comp.type };
       for (const [k, v] of Object.entries(comp)) {
         if (k === 'type') continue;
@@ -133,9 +142,13 @@ function compactObjects(objects) { if (window.__noCompact) return objects;
 
 export async function play(compileFn) {
   if (editor.playing) { stop(); return; }
+  unlockAudio();
   if (!engine.ready) { toast(engine.error ? 'The C# engine failed to load: ' + engine.error : 'The C# engine is still loading…', engine.error ? 'error' : ''); return; }
   const T = [performance.now()];
   const ok = await compileFn(true);
+  await ensureModels(); // the engine reads imported models' meshes and clips from the page
+  const physicsEngine = await usePhysicsEngine(project.settings.physicsEngine || 'physx');
+  if (physicsEngine !== (project.settings.physicsEngine || 'physx')) log(1, 'PhysX could not load here, so this run uses the Rapier physics engine.');
   T.push(performance.now());
   if (!ok) { toast('All compiler errors have to be fixed before you can enter playmode!', 'error'); bus.emit('show-bottom-tab', 'console'); return; }
   onPlayStart();
@@ -192,8 +205,12 @@ function step(dt) {
 }
 
 function applyEvents(r) {
-  if (r.frame) viewport.applyFrame(r.frame);
   const ev = JSON.parse(r.events || '{}');
+  // new meshes, textures, materials and text first: the frame refers to them
+  viewport.applyRuntimeAssets({ meshes: r.meshes, meshAssets: ev.meshAssets, textures: r.textures, texAssets: ev.texAssets, mats: ev.mats, texts: ev.texts, meshGone: ev.meshGone, extras: r.extras });
+  if (r.frame) viewport.applyFrame(r.frame);
+  if (r.audioClips) for (const [uid, ch, freq, data] of r.audioClips) uploadClip(uid, ch, freq, data);
+  if (ev.audio) applyAudio(ev.audio);
   if (ev.logs) for (const l of ev.logs) log(l.t, l.m, l.s, l.id ? { id: l.id } : {});
   if (ev.hier) { editor.runtime = ev.hier; bus.emit('runtime-hierarchy'); }
   const overlay = document.getElementById('gui-overlay');
@@ -223,6 +240,7 @@ function updateStats() {
 export function setPaused(p) {
   if (!editor.playing) return;
   editor.paused = p;
+  setAudioPaused(p);
   bus.emit('play-state', { playing: true, paused: p });
 }
 export function stepOnce() {
@@ -236,6 +254,7 @@ export function stop(fromError = false) {
   cancelAnimationFrame(raf);
   try { if (!fromError) { const ev = engine.endPlay(); applyEvents({ events: ev, frame: null }); } else engine.endPlay(); } catch (e) { }
   editor.playing = false; editor.paused = false; editor.runtime = null;
+  stopAllAudio(); setAudioPaused(false);
   releaseAll(); downs.clear(); ups.clear();
   if (document.pointerLockElement) document.exitPointerLock();
   document.getElementById('app').classList.remove('playing');

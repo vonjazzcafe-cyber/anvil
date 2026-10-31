@@ -61,6 +61,26 @@ const hooks = {
   },
 };
 
+function finishCollider(b, bodyId, desc, center, extraRot, local, trigger, friction, restitution, fc, rc, layer, iid) {
+    const lr = quat(local, 3);
+    const lp = vec(local, 0);
+    const c = qrot(lr, center);
+    desc = desc.setTranslation(lp.x + c.x, lp.y + c.y, lp.z + c.z).setRotation(extraRot ? qmul(lr, extraRot) : lr);
+    desc = desc.setSensor(!!trigger).setFriction(friction).setRestitution(restitution)
+      .setFrictionCombineRule(mapCombine(fc)).setRestitutionCombineRule(mapCombine(rc))
+      .setActiveEvents(R.ActiveEvents.COLLISION_EVENTS)
+      .setActiveHooks(R.ActiveHooks.FILTER_CONTACT_PAIRS | R.ActiveHooks.FILTER_INTERSECTION_PAIRS)
+      .setDensity(trigger ? 0 : 1);
+    if (trigger) desc = desc.setActiveCollisionTypes(R.ActiveCollisionTypes.DEFAULT | R.ActiveCollisionTypes.KINEMATIC_FIXED | R.ActiveCollisionTypes.KINEMATIC_KINEMATIC);
+    const col = world.createCollider(desc, b.body);
+    const id = nextId++;
+    colliders.set(id, { col, body: bodyId, layer: layer & 31, trigger: !!trigger, iid });
+    byRapierCollider.set(col.handle, id);
+    b.colliders.add(id);
+    stepsSinceChange = 0;
+    return id;
+  }
+
 export const physicsImports = {
   reset(gx, gy, gz) {
     if (world) { try { world.free(); } catch (e) {} }
@@ -73,6 +93,7 @@ export const physicsImports = {
     nextId = 1; stepsSinceChange = 0;
   },
   setGravity(gx, gy, gz) { if (world) world.gravity = { x: gx, y: gy, z: gz }; },
+  setBodySolver() { },
   createBody(type, pose) {
     let desc = type === 0 ? R.RigidBodyDesc.fixed() : type === 2 ? R.RigidBodyDesc.kinematicPositionBased() : R.RigidBodyDesc.dynamic();
     desc = desc.setTranslation(pose[0], pose[1], pose[2]).setRotation(quat(pose, 3)).setCanSleep(true);
@@ -136,23 +157,17 @@ export const physicsImports = {
       }
       default: desc = R.ColliderDesc.cuboid(0.5, 0.5, 0.5);
     }
-    const lr = quat(local, 3);
-    const lp = vec(local, 0);
-    const c = qrot(lr, center);
-    desc = desc.setTranslation(lp.x + c.x, lp.y + c.y, lp.z + c.z).setRotation(extraRot ? qmul(lr, extraRot) : lr);
-    desc = desc.setSensor(!!trigger).setFriction(friction).setRestitution(restitution)
-      .setFrictionCombineRule(mapCombine(fc)).setRestitutionCombineRule(mapCombine(rc))
-      .setActiveEvents(R.ActiveEvents.COLLISION_EVENTS)
-      .setActiveHooks(R.ActiveHooks.FILTER_CONTACT_PAIRS | R.ActiveHooks.FILTER_INTERSECTION_PAIRS)
-      .setDensity(trigger ? 0 : 1);
-    if (trigger) desc = desc.setActiveCollisionTypes(R.ActiveCollisionTypes.DEFAULT | R.ActiveCollisionTypes.KINEMATIC_FIXED | R.ActiveCollisionTypes.KINEMATIC_KINEMATIC);
-    const col = world.createCollider(desc, b.body);
-    const id = nextId++;
-    colliders.set(id, { col, body: bodyId, layer: layer & 31, trigger: !!trigger, iid });
-    byRapierCollider.set(col.handle, id);
-    b.colliders.add(id);
-    stepsSinceChange = 0;
-    return id;
+    return finishCollider(b, bodyId, desc, center, extraRot, local, trigger, friction, restitution, fc, rc, layer, iid);
+  },
+  createMeshCollider(bodyId, verts, tris, convex, local, trigger, friction, restitution, fc, rc, layer, iid) {
+    const b = bodies.get(bodyId); if (!b) return -1;
+    const v = new Float32Array(verts.slice ? verts.slice() : verts), t = new Uint32Array(tris.slice ? tris.slice() : tris);
+    let desc = null;
+    // like PhysX: a moving body can't use a concave mesh, so it gets the convex hull
+    if (convex || b.type === 1) desc = R.ColliderDesc.convexHull(v);
+    if (!desc && t.length >= 3) desc = R.ColliderDesc.trimesh(v, t);
+    if (!desc) desc = R.ColliderDesc.cuboid(0.05, 0.05, 0.05);
+    return finishCollider(b, bodyId, desc, { x: 0, y: 0, z: 0 }, null, local, trigger, friction, restitution, fc, rc, layer, iid);
   },
   removeCollider(id) {
     const c = colliders.get(id); if (!c) return;

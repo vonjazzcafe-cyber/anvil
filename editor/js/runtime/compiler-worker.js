@@ -9,7 +9,7 @@ async function init(site) {
   X = await startDotnet(site, {
     // the engine assembly declares these imports; the compiler never calls them
     physics: new Proxy({}, { get: () => () => 0 }),
-    anvil: { pushFrame: () => { } },
+    anvil: { pushFrame: () => { }, pushExtras: () => { }, uploadMesh: () => { }, uploadTexture: () => { }, uploadAudio: () => { } },
   });
   const r = X.InitCompiler(await loadRefs(site));
   if (!String(r).startsWith('ok')) throw new Error(r);

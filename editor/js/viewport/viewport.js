@@ -5,6 +5,8 @@ import { bus } from '../core/events.js';
 import { editor } from '../core/scene.js';
 import { project } from '../core/project.js';
 import { toThreePos, toThreeQuat, fromThreePos, fromThreeQuat, unityMatrixToThree, quatToEulerNear, round } from '../core/math.js';
+import { RuntimeRender } from './runtime-render.js';
+import { modelGeometry } from '../core/models.js';
 
 const ORANGE = 0xf5a623, CHILD_BLUE = 0x6fb4ff, COLLIDER_GREEN = 0x8dff8d, JOINT_ORANGE = 0xffa040;
 
@@ -24,16 +26,28 @@ function geometry(kind) {
   geoCache[kind] = g;
   return g;
 }
+function colliderGeo(m) { return (typeof m === 'string' && m.includes('#') ? modelGeometry(m)?.geo : null) || geometry(m || 'Cube'); }
 const MESH_BY_CODE = [null, 'Cube', 'Sphere', 'Capsule', 'Cylinder', 'Plane', 'Quad'];
 const edgeCache = new Map();
 function edges(kind) { if (!edgeCache.has(kind)) edgeCache.set(kind, new THREE.EdgesGeometry(geometry(kind), 25)); return edgeCache.get(kind); }
 const matCache = new Map();
-function material(color, metallic = 0, smoothness = 0.5) {
+const editTexCache = new Map();
+function editTexture(path) {
+  const f = project.file(path); const url = f?.data?.url; if (!url) return null;
+  let e = editTexCache.get(path);
+  if (e && e.url === url) return e.tex;
+  const tex = new THREE.Texture(); tex.colorSpace = THREE.SRGBColorSpace; tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  const img = new Image(); img.onload = () => { tex.image = img; tex.needsUpdate = true; bus.emit('viewport-refresh'); }; img.src = url;
+  editTexCache.set(path, { url, tex });
+  return tex;
+}
+function material(color, metallic = 0, smoothness = 0.5, texPath = null) {
   const c = color || [1, 1, 1, 1];
-  const key = c.map(v => Math.round(v * 255)).join(',') + '|' + metallic.toFixed(2) + '|' + smoothness.toFixed(2);
+  const key = c.map(v => Math.round(v * 255)).join(',') + '|' + metallic.toFixed(2) + '|' + smoothness.toFixed(2) + '|' + (texPath ? texPath + (project.file(texPath)?.data?.url?.length || 0) : '');
   let m = matCache.get(key);
   if (!m) {
     m = new THREE.MeshStandardMaterial({ color: new THREE.Color().setRGB(c[0], c[1], c[2], THREE.SRGBColorSpace), metalness: metallic, roughness: Math.min(1, Math.max(0.05, 1 - smoothness * 0.85)) });
+    if (texPath) m.map = editTexture(texPath);
     if (c[3] < 0.999) { m.transparent = true; m.opacity = c[3]; m.depthWrite = false; }
     matCache.set(key, m);
   }
@@ -42,7 +56,7 @@ function material(color, metallic = 0, smoothness = 0.5) {
 function materialFor(comp) {
   if (comp.material) {
     const f = project.file(comp.material);
-    if (f && f.data) return material(f.data.color || [1, 1, 1, 1], f.data.metallic || 0, f.data.smoothness ?? 0.5);
+    if (f && f.data) return material(f.data.color || [1, 1, 1, 1], f.data.metallic || 0, f.data.smoothness ?? 0.5, f.data.texture || null);
   }
   return material(comp.color || [1, 1, 1, 1]);
 }
@@ -199,6 +213,7 @@ export class Viewport {
     this.grid = makeGrid(); this.scene.add(this.grid);
     this.editRoot = new THREE.Group(); this.scene.add(this.editRoot);
     this.playRoot = new THREE.Group(); this.playRoot.visible = false; this.scene.add(this.playRoot);
+    this.rt = new RuntimeRender(this.playRoot);
     this.helpers = new THREE.Group(); this.scene.add(this.helpers);
     this.debugLines = new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ vertexColors: true, depthTest: true }));
     this.debugLines.frustumCulled = false; this.scene.add(this.debugLines);
@@ -228,6 +243,7 @@ export class Viewport {
     new ResizeObserver(() => this.resize()).observe(gameHost);
     this.axisGizmo = this.makeAxisGizmo();
     bus.on('scene-camera-moved', () => { this.needsRender = true; });
+    bus.on('viewport-refresh', () => { this.needsRender = true; if (!editor.playing) this.syncFromScene(); });
     bus.scenePivot = () => fromThreePos(this.controller.pivot);
     this.loop();
   }
@@ -296,19 +312,43 @@ export class Viewport {
     g.visible = o.active !== false;
     const mf = o.comps.find(c => c.type === 'MeshFilter');
     const mr = o.comps.find(c => c.type === 'MeshRenderer');
-    const kind = mf && mr ? mf.mesh : null;
-    if (kind) {
-      if (!n.mesh || n.meshKind !== kind) {
+    const smr = o.comps.find(c => c.type === 'SkinnedMeshRenderer');
+    const rend = smr || mr;
+    const kind = smr ? smr.mesh : mf && mr ? mf.mesh : null;
+    let geo = null;
+    if (kind) geo = typeof kind === 'string' && kind.includes('#') ? modelGeometry(kind)?.geo : geometry(kind);
+    if (kind && geo) {
+      if (!n.mesh || n.meshKind !== kind || n.mesh.geometry !== geo) {
         if (n.mesh) n.mesh.removeFromParent();
-        n.mesh = new THREE.Mesh(geometry(kind), materialFor(mr));
+        n.mesh = new THREE.Mesh(geo, materialFor(rend));
         n.mesh.userData.id = o.id; n.meshKind = kind;
         g.add(n.mesh);
       }
-      n.mesh.material = materialFor(mr);
-      n.mesh.visible = mr.enabled !== false;
-      n.mesh.castShadow = (mr.shadowCastingMode ?? 1) !== 0;
-      n.mesh.receiveShadow = mr.receiveShadows !== false;
+      const mats = Array.isArray(rend.materials) && rend.materials.length ? rend.materials : null;
+      n.mesh.material = mats && mats.length > 1 ? mats.map(p => materialFor({ material: p })) : rend.material || !mats ? materialFor(rend) : materialFor({ material: mats[0] });
+      n.mesh.visible = rend.enabled !== false;
+      n.mesh.castShadow = (rend.shadowCastingMode ?? 1) !== 0;
+      n.mesh.receiveShadow = rend.receiveShadows !== false;
     } else if (n.mesh) { n.mesh.removeFromParent(); n.mesh = null; n.meshKind = null; }
+    // sprites (SpriteRenderer): a textured quad, 100 pixels per unit, pivot in the centre
+    const spr = o.comps.find(c => c.type === 'SpriteRenderer');
+    const sf = spr && spr.sprite ? project.file(spr.sprite) : null;
+    if (spr && sf && sf.data) {
+      const w0 = (sf.data.w || 100) / 100, h0 = (sf.data.h || 100) / 100;
+      const w = spr.drawMode > 0 && spr.size ? spr.size[0] : w0, h = spr.drawMode > 0 && spr.size ? spr.size[1] : h0;
+      const key = spr.sprite + '|' + (sf.data.url?.length || 0) + '|' + w + '|' + h + '|' + !!spr.flipX + '|' + !!spr.flipY;
+      if (!n.sprite || n.spriteKey !== key) {
+        if (n.sprite) { n.sprite.removeFromParent(); n.sprite.geometry.dispose(); }
+        const geo = new THREE.PlaneGeometry(w, h);
+        if (spr.flipX || spr.flipY) { const uv = geo.attributes.uv; for (let i = 0; i < uv.count; i++) { if (spr.flipX) uv.setX(i, 1 - uv.getX(i)); if (spr.flipY) uv.setY(i, 1 - uv.getY(i)); } }
+        const mat = new THREE.MeshBasicMaterial({ map: editTexture(spr.sprite), transparent: true, side: THREE.DoubleSide, depthWrite: false });
+        n.sprite = new THREE.Mesh(geo, mat); n.sprite.userData.id = o.id; n.spriteKey = key; g.add(n.sprite);
+      }
+      const c = spr.color || [1, 1, 1, 1];
+      n.sprite.material.color.setRGB(c[0], c[1], c[2], THREE.SRGBColorSpace); n.sprite.material.opacity = c[3] ?? 1;
+      n.sprite.renderOrder = spr.sortingOrder | 0;
+      n.sprite.visible = spr.enabled !== false;
+    } else if (n.sprite) { n.sprite.removeFromParent(); n.sprite.geometry.dispose(); n.sprite = null; n.spriteKey = null; }
     // lights
     const lc = o.comps.find(c => c.type === 'Light');
     if (lc) {
@@ -360,7 +400,7 @@ export class Viewport {
       }
       if (isSel) {
         for (const c of o.comps) {
-          if (/Collider$/.test(c.type) && c.enabled !== false) this.attachHelper(colliderWire(c, n), g);
+          if (/Collider(2D)?$/.test(c.type) && c.enabled !== false) this.attachHelper(colliderWire(c, n), g);
           if (c.type === 'HingeJoint' || c.type === 'ConfigurableJoint') this.attachHelper(jointGizmo(c), g);
           if (c.type === 'CharacterController') this.attachHelper(colliderWire(Object.assign({ type: 'CapsuleCollider', direction: 1 }, c), n), g);
         }
@@ -452,6 +492,7 @@ export class Viewport {
     this.tc.detach();
     for (const n of this.playNodes.values()) n.group.removeFromParent();
     this.playNodes.clear();
+    this.rt.reset();
     this.frameData = null;
     this.helpers.clear();
     this.needsRender = true;
@@ -460,9 +501,20 @@ export class Viewport {
     this.editRoot.visible = true; this.playRoot.visible = false;
     for (const n of this.playNodes.values()) n.group.removeFromParent();
     this.playNodes.clear();
+    this.rt.reset();
     this.setDebugLines(null);
     this.playCamera = null;
     this.syncFromScene();
+  }
+  applyRuntimeAssets(a) {
+    if (a.meshes) for (const [uid, u8] of a.meshes) this.rt.uploadMesh(uid, u8);
+    if (a.meshAssets) for (const [uid, key] of a.meshAssets) this.rt.useModelMesh(uid, key);
+    if (a.textures) for (const [uid, w, h, flags, u8] of a.textures) this.rt.uploadTexture(uid, w, h, flags, u8);
+    if (a.texAssets) for (const [uid, path] of a.texAssets) this.rt.uploadTextureAsset(uid, path);
+    if (a.mats) this.rt.setMats(a.mats);
+    if (a.texts) this.rt.setTexts(a.texts);
+    if (a.meshGone) this.rt.meshGone(a.meshGone);
+    this.rt.setExtras(a.extras || null);
   }
   applyFrame(data) {
     // data: Float64Array [n, items...] stride 28
@@ -488,15 +540,30 @@ export class Viewport {
       node.group.matrix.copy(m);
       node.group.matrixWorldNeedsUpdate = true;
       if (kind === 0) {
-        const meshKind = MESH_BY_CODE[data[o + 2] | 0] || 'Cube';
-        if (!node.mesh || node.meshKind !== meshKind) {
+        const ref = data[o + 2] | 0, slot = data[o + 4] | 0;
+        let geo, subCount = 1, hasColor = false, extra = null;
+        if (ref > 0) geo = geometry(MESH_BY_CODE[ref] || 'Cube');
+        else { const g = this.rt.geometry(-ref); if (g) { geo = g.geo; subCount = g.subCount; hasColor = g.hasColor; extra = g; } }
+        const geoKey = ref > 0 ? 'p' + ref : 'm' + (-ref) + ':' + (extra ? extra.ver : 0);
+        if (!geo) { if (node.mesh) node.mesh.visible = false; continue; }
+        if (!node.mesh || node.geoKey !== geoKey) {
           if (node.mesh) node.mesh.removeFromParent();
-          node.mesh = new THREE.Mesh(geometry(meshKind)); node.meshKind = meshKind;
+          node.mesh = new THREE.Mesh(geo); node.geoKey = geoKey; node.matKey = null;
           node.mesh.userData.id = id; node.group.add(node.mesh);
+          for (const c of node.extraParts || []) c.removeFromParent();
+          node.extraParts = [];
+          if (extra?.lines) { const l = new THREE.LineSegments(extra.lines, new THREE.LineBasicMaterial({ vertexColors: extra.hasColor })); node.group.add(l); node.extraParts.push(l); }
+          if (extra?.points) { const p = new THREE.Points(extra.points, new THREE.PointsMaterial({ size: 3, sizeAttenuation: false, vertexColors: extra.hasColor })); node.group.add(p); node.extraParts.push(p); }
         }
-        node.mesh.material = material([data[o + 4], data[o + 5], data[o + 6], data[o + 7]], data[o + 8], data[o + 9]);
+        const matKey = slot + ':' + this.rt.slotVersion(slot) + ':' + subCount + ':' + hasColor;
+        if (node.matKey !== matKey) { node.mesh.material = this.rt.materials(slot, subCount, { vertexColors: hasColor }); node.matKey = matKey; }
         node.mesh.visible = data[o + 3] !== 0;
+        for (const c of node.extraParts || []) c.visible = node.mesh.visible;
         node.mesh.castShadow = data[o + 10] !== 0; node.mesh.receiveShadow = data[o + 11] !== 0;
+        node.mesh.renderOrder = data[o + 5] | 0;
+      } else if (kind === 3) {
+        this.rt.updateText(node, data[o + 2] | 0);
+        if (node.textMesh) node.textMesh.visible = data[o + 3] !== 0;
       } else if (kind === 1) {
         const t = data[o + 2] | 0;
         if (!node.light || node.lightType !== t) {
@@ -598,6 +665,7 @@ export class Viewport {
       if (g.clear !== 1) { this.sky.visible = false; this.scene.background = new THREE.Color().setRGB(g.bg[0], g.bg[1], g.bg[2], THREE.SRGBColorSpace); }
     }
     this.sky.position.copy(cam.position.setFromMatrixPosition(cam.matrixWorld));
+    if (editor.playing) this.rt.buildExtras(cam);
     this.renderer.render(this.scene, cam);
     if (isScene) this.drawAxisGizmo();
   }
@@ -708,9 +776,31 @@ function colliderWire(c, n) {
       }
     }
     for (const [x, z] of [[r, 0], [-r, 0], [0, r], [0, -r]]) { const a = P(x, half, z), b = P(x, -half, z); pts.push(cx + a[0], cy + a[1], cz + a[2], cx + b[0], cy + b[1], cz + b[2]); }
+  } else if (c.type === 'BoxCollider2D') {
+    const s = c.size || [1, 1], o = c.offset || [0, 0], r = c.edgeRadius || 0, hx = s[0] / 2 + r, hy = s[1] / 2 + r;
+    const v = [[o[0] - hx, o[1] - hy], [o[0] + hx, o[1] - hy], [o[0] + hx, o[1] + hy], [o[0] - hx, o[1] + hy]];
+    for (let i = 0; i < 4; i++) pts.push(v[i][0], v[i][1], 0, v[(i + 1) % 4][0], v[(i + 1) % 4][1], 0);
+  } else if (c.type === 'CircleCollider2D') {
+    const o = c.offset || [0, 0];
+    circle(pts, o[0], o[1], 0, c.radius ?? 0.5, 2, 40);
+  } else if (c.type === 'CapsuleCollider2D') {
+    const o = c.offset || [0, 0], s = c.size || [0.5, 1], vert = (c.direction ?? 0) === 0;
+    const r = (vert ? s[0] : s[1]) / 2, half = Math.max(0, (vert ? s[1] : s[0]) / 2 - r);
+    const P = (a, b) => vert ? [o[0] + a, o[1] + b] : [o[0] + b, o[1] + a];
+    const seg = 20;
+    for (const sg of [1, -1]) for (let i = 0; i < seg; i++) {
+      const a0 = i / seg * Math.PI, a1 = (i + 1) / seg * Math.PI;
+      const p0 = P(Math.cos(a0) * r, sg * (half + Math.sin(a0) * r)), p1 = P(Math.cos(a1) * r, sg * (half + Math.sin(a1) * r));
+      pts.push(p0[0], p0[1], 0, p1[0], p1[1], 0);
+    }
+    for (const x of [r, -r]) { const a = P(x, half), b = P(x, -half); pts.push(a[0], a[1], 0, b[0], b[1], 0); }
+  } else if (c.type === 'PolygonCollider2D' || c.type === 'EdgeCollider2D') {
+    const o = c.offset || [0, 0], p = c.points || (c.type === 'EdgeCollider2D' ? [[-0.5, 0], [0.5, 0]] : []);
+    const closed = c.type === 'PolygonCollider2D';
+    for (let i = 0; i < p.length - (closed ? 0 : 1); i++) { const a = p[i], b = p[(i + 1) % p.length]; pts.push(o[0] + a[0], o[1] + a[1], 0, o[0] + b[0], o[1] + b[1], 0); }
   } else if (c.type === 'MeshCollider') {
-    const box = new THREE.Box3().setFromBufferAttribute(geometry(c.mesh || 'Cube').attributes.position);
-    const e = new THREE.LineSegments(new THREE.EdgesGeometry(geometry(c.mesh || 'Cube'), 25), new THREE.LineBasicMaterial({ color: COLLIDER_GREEN }));
+    const box = new THREE.Box3().setFromBufferAttribute(colliderGeo(c.mesh).attributes.position);
+    const e = new THREE.LineSegments(new THREE.EdgesGeometry(colliderGeo(c.mesh), 25), new THREE.LineBasicMaterial({ color: COLLIDER_GREEN }));
     return e;
   }
   return lineObj(pts, COLLIDER_GREEN, { opacity: 0.9 });

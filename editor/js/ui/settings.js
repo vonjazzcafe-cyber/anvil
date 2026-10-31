@@ -21,9 +21,16 @@ export function renderSettings(h) {
   ));
 
   wrap.append(section('Physics',
+    field('Physics Engine', enumEditor(['PhysX (like Unity)', 'Rapier (lighter)'], ['physx', 'rapier'], s.physicsEngine || 'physx', (v) => { s.physicsEngine = v; touch(); })),
+    el('div', { class: 'insp-note info', text: 'PhysX is the engine Unity\'s 3D physics runs on, with Unity\'s settings, so bounces, friction, joints and motors behave like in Unity. Rapier loads faster on slow connections (the first PhysX download is about 3 MB).' }),
     field('Gravity', vectorEditor(s.gravity, (v) => { s.gravity = v; touch(); })),
     el('div', { style: { margin: '6px 0 2px', color: '#ccc' }, text: 'Layer Collision Matrix' }),
     layerMatrix(s, touch),
+  ));
+
+  wrap.append(section('Physics 2D',
+    field('Gravity', vectorEditor(s.gravity2D || [0, -9.81], (v) => { s.gravity2D = v; touch(); }, { labels: ['X', 'Y'] })),
+    el('div', { class: 'insp-note info', text: 'Rigidbody 2D, the 2D colliders and joints run on Box2D, like Unity. 2D objects use the same layer collision matrix as 3D here.' }),
   ));
 
   wrap.append(section('Time',

@@ -5,7 +5,7 @@ import { editor } from './core/scene.js';
 import { Viewport } from './viewport/viewport.js';
 import { initHierarchy, startRename } from './ui/hierarchy.js';
 import { initInspector, scriptMeta, showSettingsTab, addScriptOrComponent } from './ui/inspector.js';
-import { initProjectPanel, download, currentFolder } from './ui/project-panel.js';
+import { initProjectPanel, download, currentFolder, importAssetsDialog } from './ui/project-panel.js';
 import { initConsole, log, setCompileMessages, clearConsole, hasCompileErrors, getEntries } from './ui/console.js';
 import { menuBar, showMenu } from './ui/menus.js';
 import { createMenuItems } from './ui/create-menu.js';
@@ -17,6 +17,10 @@ import { exportUnityZip, exportProjectZip, importProjectZip } from './export/exp
 import { githubDialog } from './export/github.js';
 import { COMPONENTS } from './core/components.js';
 import { initOffline } from './core/offline.js';
+import { initUiPreview } from './runtime/ui-preview.js';
+import { rectSize } from './ui/ui-inspector.js';
+import { createUI } from './core/ui-create.js';
+import { initLocalFolder, openProjectFolder, saveProjectToFolder, reconnectFolder, disconnectFolder, linkedFolderName, folderSupported } from './core/local-folder.js';
 
 let viewport;
 const openTabs = [];          // open script paths (center tabs)
@@ -25,6 +29,8 @@ let scriptsDirty = true;
 let lastCompileOk = false;
 
 async function boot() {
+  initLocalFolder();
+  bus.on('folder-status', updateFolderStatus);
   const last = (await storage.get('lastProject')) || 'My Project';
   await project.load(last);
   viewport = new Viewport(document.getElementById('scene-host'), document.getElementById('game-host'));
@@ -35,10 +41,12 @@ async function boot() {
   initProjectPanel();
   initConsole();
   initPlay(viewport);
+  initUiPreview(viewport);
   initMenus();
   initToolbar();
   initTabs();
   initSplitters();
+  initPanels();
   initShortcuts();
   initDrops();
   bus.on('scene-changed', () => { if (!editor.playing) viewport.syncFromScene(); updateTitle(); });
@@ -64,7 +72,7 @@ async function boot() {
   engine.load();
   initOffline();
   document.getElementById('boot')?.remove();
-  window.anvil = { project, editor, viewport, engine, bus, compileNow, play: () => play(compileBeforePlay), stop, setPaused, stepOnce, scriptMeta, addScriptOrComponent, openScript, showCenter, showBottom, getEntries };
+  window.anvil = { project, editor, viewport, engine, bus, compileNow, play: () => play(compileBeforePlay), stop, setPaused, stepOnce, scriptMeta, addScriptOrComponent, openScript, showCenter, showBottom, getEntries, rectSize, createUI };
 }
 
 function onProjectLoaded() {
@@ -101,6 +109,12 @@ async function doCompile() {
     scriptsDirty = false;
     const scripts = project.scripts();
     const res = await engine.compile(scripts);
+    for (const d of res.diags) {   // CS0101 = same class declared twice: say which other file holds the copy
+      if (d.id !== 'CS0101') continue;
+      const m = /'(\w+)'[^']*$/.exec(d.message); if (!m) continue;
+      const others = scripts.filter(f => f.path !== d.file && new RegExp('\\b(class|struct|enum|interface)\\s+' + m[1] + '\\b').test(f.code)).map(f => f.path);
+      d.message += others.length ? ` - the other copy is in: ${others.join(', ')}. Delete it or rename the class.` : ` - no other file declares it; the error may be stale, press Ctrl+S.`;
+    }
     setCompileMessages(res.diags);
     lastCompileOk = res.ok;
     if (res.ok) {
@@ -168,6 +182,7 @@ function showCenter(id) {
   document.getElementById('view-code').classList.toggle('hidden', id === 'scene' || id === 'game');
   if (id === 'scene' || id === 'game') {
     viewport.setMode(id);
+    bus.emit('center-view', id);
     // like Unity: coming back from the code editor recompiles
     if (prev !== 'scene' && prev !== 'game') { code.saveAll(); if (scriptsDirty) compileSoon(); }
   } else code.openFile(id);
@@ -264,11 +279,40 @@ function initSplitters() {
   });
 }
 
+// ---------------- collapsible panels ----------------
+const PANELS = { left: 'hide-left', right: 'hide-right', bottom: 'hide-bottom' };
+function initPanels() {
+  const ws = document.getElementById('workspace');
+  let saved = {}; try { saved = JSON.parse(localStorage.getItem('anvil-panels') || '{}'); } catch {}
+  const apply = () => {
+    for (const [k, cls] of Object.entries(PANELS)) {
+      ws.classList.toggle(cls, !!saved[k]);
+      document.querySelector(`.pan-btn[data-panel="${k}"]`)?.classList.toggle('off', !!saved[k]);
+    }
+    try { localStorage.setItem('anvil-panels', JSON.stringify(saved)); } catch {}
+    window.dispatchEvent(new Event('resize'));
+  };
+  const toggle = (k) => { saved[k] = !saved[k]; apply(); };
+  window.anvilPanels = {
+    toggle,
+    show: () => { saved = {}; apply(); },
+    focusCode: () => { const all = !(saved.left && saved.right && saved.bottom); saved = { left: all, right: all, bottom: all }; apply(); },
+  };
+  document.querySelectorAll('.pan-btn').forEach(b => b.addEventListener('click', () => toggle(b.dataset.panel)));
+  document.querySelectorAll('.splitter').forEach(sp => sp.addEventListener('dblclick', () => toggle(sp.dataset.split)));
+  apply();
+}
+
 // ---------------- shortcuts ----------------
 function initShortcuts() {
   window.addEventListener('keydown', (e) => {
     const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName) || document.activeElement?.closest?.('.cm-editor');
     const mod = e.ctrlKey || e.metaKey;
+    if (e.altKey && !mod && !e.shiftKey && window.anvilPanels) {
+      const k = { Digit1: 'left', Digit2: 'right', Digit3: 'bottom' }[e.code];
+      if (k) { e.preventDefault(); window.anvilPanels.toggle(k); return; }
+      if (e.code === 'Digit0') { e.preventDefault(); window.anvilPanels.focusCode(); return; }
+    }
     if (mod && e.code === 'KeyP') { e.preventDefault(); if (e.shiftKey) { if (editor.playing) setPaused(!editor.paused); } else if (e.altKey) stepOnce(); else play(compileBeforePlay); return; }
     if (mod && e.code === 'KeyS' && !document.activeElement?.closest?.('.cm-editor')) { e.preventDefault(); saveProject(); return; }
     if (typing) return;
@@ -299,9 +343,12 @@ function initDrops() {
     const path = e.dataTransfer.getData('anvil/asset'); if (!path || editor.playing) return;
     e.preventDefault();
     const kind = kindOf(path);
-    if (kind === 'prefab') {
+    if (kind === 'prefab' || kind === 'model') {
       const p = viewport.controller.pivot;
       editor.instantiatePrefab(path, 0, [Math.round(p.x * 100) / 100, Math.round(p.y * 100) / 100, Math.round(-p.z * 100) / 100]);
+    } else if (kind === 'texture') {
+      const p = viewport.controller.pivot;
+      editor.createSprite(path, 0, [Math.round(p.x * 100) / 100, Math.round(p.y * 100) / 100, 0]);
     } else if (editor.selected != null) applyAssetToObject(editor.selected, path);
   });
 }
@@ -318,10 +365,17 @@ function applyAssetToObject(id, path) {
   } else if (kind === 'material') {
     const ci = o.comps.findIndex(c => c.type === 'MeshRenderer');
     if (ci >= 0) editor.setComp(id, ci, 'material', path); else toast('That object has no Mesh Renderer');
+  } else if (kind === 'physicsMaterial2D') {
+    const ci = o.comps.findIndex(c => /Collider2D$/.test(c.type) || c.type === 'Rigidbody2D');
+    if (ci >= 0) editor.setComp(id, ci, 'sharedMaterial', path); else toast('That object has no 2D Collider');
   } else if (kind === 'physicsMaterial') {
     const ci = o.comps.findIndex(c => /Collider$/.test(c.type));
     if (ci >= 0) editor.setComp(id, ci, 'material', path); else toast('That object has no Collider');
-  } else if (kind === 'prefab') editor.instantiatePrefab(path, id);
+  } else if (kind === 'prefab' || kind === 'model') editor.instantiatePrefab(path, id);
+  else if (kind === 'texture') {
+    const ci = o.comps.findIndex(c => c.type === 'SpriteRenderer' || c.type === 'Image');
+    if (ci >= 0) editor.setComp(id, ci, 'sprite', path); else toast('That object has no Sprite Renderer or Image');
+  }
 }
 
 // ---------------- scenes & projects ----------------
@@ -395,6 +449,11 @@ function initMenus() {
       { label: 'Rename Project…', action: renameProjectDialog },
       { label: 'Delete a Project…', action: deleteProjectDialog },
       '-',
+      { label: linkedFolderName() ? `Project Folder: ${linkedFolderName()}` : 'Open Project Folder on This Computer…', disabled: !folderSupported() || !!linkedFolderName(), action: () => openProjectFolder() },
+      { label: 'Save Project to a Folder…', disabled: !folderSupported(), action: () => saveProjectToFolder() },
+      { label: 'Reconnect Project Folder', disabled: !folderSupported() || !!linkedFolderName(), action: () => reconnectFolder() },
+      { label: 'Stop Saving to Folder', disabled: !linkedFolderName(), action: () => disconnectFolder() },
+      '-',
       { label: 'Export to Unity (.zip)…', action: () => exportUnityZip() },
       { label: 'Download Project Backup (.zip)', action: () => exportProjectZip() },
       { label: 'Import Project Backup (.zip)…', action: () => importProjectZip() },
@@ -419,6 +478,7 @@ function initMenus() {
       { label: 'Create', submenu: () => { const items = []; return [
         { label: 'MonoBehaviour Script', action: () => document.querySelector('.proj-bar .icon-btn')?.click() },
       ]; } },
+      { label: 'Import New Asset…', action: () => importAssetsDialog() },
       { label: 'Recompile Scripts', action: () => { scriptsDirty = true; compileNow(true); } },
       { label: 'Open C# Script…', action: async () => { const r = await pick('Open Script', project.scripts().map(s => ({ label: fileName(s.path), hint: s.path, value: s.path }))); if (r) openScript(r); } },
     ]],
@@ -429,7 +489,7 @@ function initMenus() {
       { label: 'Align With View', disabled: editor.selected == null || editor.playing, action: () => alignWithView() },
     ]],
     ['Component', () => [
-      ...['Physics', 'Mesh', 'Rendering', 'Audio', 'Input'].map(cat => ({ label: cat, submenu: Object.entries(COMPONENTS).filter(([, d]) => d.menu === cat).map(([type, d]) => ({ label: d.title, disabled: editor.selected == null || editor.playing, action: () => editor.addComponent(editor.selected, type) })) })),
+      ...['Physics', 'Mesh', 'Rendering', 'Audio', 'Input', 'UI', 'Layout', 'Event'].map(cat => ({ label: cat, submenu: Object.entries(COMPONENTS).filter(([, d]) => d.menu === cat).map(([type, d]) => ({ label: d.title, disabled: editor.selected == null || editor.playing, action: () => editor.addComponent(editor.selected, type) })) })),
       { label: 'Scripts', submenu: () => [...scriptMeta.values()].filter(m => m.kind === 'MonoBehaviour' && !m.abstract).map(m => ({ label: m.name, disabled: editor.selected == null || editor.playing, action: () => addScriptOrComponent(editor.selected, { type: 'Script', script: m.name }) })) },
     ]],
     ['Window', () => [
@@ -438,7 +498,12 @@ function initMenus() {
       { label: 'Console', action: () => showBottom('console') },
       { label: 'Project', action: () => showBottom('project') },
       '-',
-      { label: 'Reset Layout', action: () => { const r = document.documentElement; r.style.removeProperty('--left'); r.style.removeProperty('--right'); r.style.removeProperty('--bottom'); delete project.data.editor.layout; project.touch('editor'); } },
+      { label: 'Hide / show Hierarchy  (Alt+1)', action: () => window.anvilPanels.toggle('left') },
+      { label: 'Hide / show Inspector  (Alt+2)', action: () => window.anvilPanels.toggle('right') },
+      { label: 'Hide / show Project & Console  (Alt+3)', action: () => window.anvilPanels.toggle('bottom') },
+      { label: 'Focus: hide all side panels  (Alt+0)', action: () => window.anvilPanels.focusCode() },
+      '-',
+      { label: 'Reset Layout', action: () => { const r = document.documentElement; r.style.removeProperty('--left'); r.style.removeProperty('--right'); r.style.removeProperty('--bottom'); delete project.data.editor.layout; project.touch('editor'); window.anvilPanels.show?.(); } },
     ]],
     ['Help', () => [
       { label: 'How Anvil works', action: helpDialog },
@@ -458,7 +523,7 @@ function alignWithView() {
 function helpDialog() {
   alertBox('How Anvil works', el('div', { style: { maxWidth: '560px', lineHeight: '1.5' } },
     el('p', { text: 'Anvil is a Unity-style editor that runs in your browser. Your C# scripts are compiled by the real C# compiler (Roslyn, C# 9 like Unity 6) and run against a re-implementation of the UnityEngine API, so code you write here can be pasted into Unity unchanged.' }),
-    el('p', { text: 'Your project is saved automatically in this browser. To move it to another PC, use File › Sync with GitHub (best) or File › Download Project Backup.' }),
+    el('p', { text: 'Your project is saved automatically in this browser. To keep it as real files on your computer, use File › Open Project Folder on This Computer (Chrome or Edge). To move it to another PC, use that folder, File › Sync with GitHub, or File › Download Project Backup.' }),
     el('p', { text: 'To take your work into real Unity: File › Export to Unity. Unzip the Assets folder into your Unity project, then use Tools › Anvil › Import Scene in Unity to rebuild the scene with the same objects, components and values.' }),
     el('p', { text: 'Physics runs on a different engine than Unity (Rapier instead of PhysX), so numbers like bounce and friction can differ slightly. Script logic, Transform maths and the order Unity calls your methods are the same.' })));
 }
@@ -480,9 +545,25 @@ Middle-drag  Pan          Alt+Left-drag  Orbit      Wheel  Zoom
 Ctrl+P       Play / Stop   Ctrl+Shift+P  Pause   Ctrl+Alt+P  Step
 Ctrl+Z / Y   Undo / Redo   Ctrl+D  Duplicate   Del  Delete   F2  Rename
 Ctrl+S       Save (in code: save & compile)
-Ctrl+Space   Code completion in the script editor` }));
+Ctrl+Space   Code completion in the script editor
+Alt+Z        Word wrap on/off in the script editor
+Alt+1 / 2 / 3  Hide/show Hierarchy / Inspector / bottom panel
+Alt+0        Focus: hide/show all side panels  (double-click a divider also works)` }));
 }
 
 // boot screen
 document.body.append(el('div', { id: 'boot' }, el('div', { text: 'Starting Anvil…' }), el('div', { class: 'bar' }, el('div'))));
 boot().catch(e => { console.error(e); const b = document.getElementById('boot'); if (b) b.firstChild.textContent = 'Failed to start: ' + e.message; });
+
+// the "saved in folder" badge next to the project name
+function updateFolderStatus(e = {}) {
+  let b = document.getElementById('folder-status');
+  if (!b) {
+    b = el('span', { id: 'folder-status', class: 'engine-status', style: { cursor: 'pointer', marginRight: '6px' } });
+    document.getElementById('project-name')?.before(b);
+  }
+  const name = linkedFolderName();
+  if (name) { b.textContent = '📁 ' + name; b.title = 'Saved as files in the folder "' + name + '" on this computer'; b.className = 'engine-status ready'; b.onclick = null; }
+  else if (e.needsReconnect) { b.textContent = '📁 Reconnect ' + e.needsReconnect; b.title = 'Click to let Anvil keep saving into this folder'; b.className = 'engine-status loading'; b.onclick = () => reconnectFolder(); }
+  else { b.textContent = ''; b.onclick = null; }
+}

@@ -1,7 +1,7 @@
 // Editor-side scene model: objects, hierarchy ops, selection, undo/redo.
 import { bus, clone } from './events.js';
 import { project, baseName } from './project.js';
-import { makeComponent, primitiveComponents, COMPONENTS } from './components.js';
+import { makeComponent, primitiveComponents, COMPONENTS, NEEDS_RECT, GRAPHIC_TYPES, RECT_DEFAULT } from './components.js';
 import { trs, mmul, minv, quatFromMatrix, scaleFromMatrix, eulerToQuat, quatToEulerNear, round } from './math.js';
 
 const undoStack = [], redoStack = [];
@@ -98,6 +98,11 @@ export const editor = {
     return pv.map(v => round(v, 2));
   },
   createEmpty(parent = 0) { return this.create({ name: 'GameObject', parent, p: this.spawnPosition(parent) }); },
+  // a GameObject with a Sprite Renderer (dragging an image into the Scene makes one, like Unity)
+  createSprite(texPath = null, parent = 0, pos = null) {
+    const sr = makeComponent('SpriteRenderer'); if (texPath) sr.sprite = texPath;
+    return this.create({ name: texPath ? baseName(texPath) : 'Sprite', parent, comps: [sr], p: pos || this.spawnPosition(parent) });
+  },
   createPrimitive(kind, parent = 0) {
     return this.create({ name: kind, parent, comps: primitiveComponents(kind), p: this.spawnPosition(parent) });
   },
@@ -207,10 +212,29 @@ export const editor = {
     if (def?.unique && o.comps.some(c => c.type === type)) { bus.emit('toast', `The component ${def.title} can't be added because ${o.name} already contains the same component.`); return false; }
     this.change(() => {
       if (def?.requires) for (const r of def.requires) if (!o.comps.some(c => c.type === r)) o.comps.push(makeComponent(r));
+      // UI components need a RectTransform (Unity swaps the Transform) and graphics a CanvasRenderer
+      if ((NEEDS_RECT.has(type) || type === 'RectTransform') && !o.comps.some(c => c.type === 'RectTransform')) { const rt = RECT_DEFAULT(); rt.anchoredPosition = [o.p[0], o.p[1]]; o.comps.unshift(rt); if (type === 'RectTransform') return; }
+      if (type === 'RectTransform') return;
+      if (GRAPHIC_TYPES.has(type) && !o.comps.some(c => c.type === 'CanvasRenderer')) o.comps.push(makeComponent('CanvasRenderer'));
       if (type === 'Script') {
         const c = { type: 'Script', script, enabled: true, fields: {} };
         o.comps.push(c);
-      } else o.comps.push(makeComponent(type));
+      } else {
+        const nc = makeComponent(type);
+        // like Unity, a new Mesh Collider takes the object's mesh
+        if (type === 'MeshCollider') { const mf = o.comps.find(c => c.type === 'MeshFilter'); if (mf?.mesh) nc.mesh = mf.mesh; }
+        // and a new 2D collider fits the object's sprite
+        const spr = o.comps.find(c => c.type === 'SpriteRenderer');
+        const sd = spr?.sprite ? project.file(spr.sprite)?.data : null;
+        if (sd && sd.w && sd.h) {
+          const w = spr.drawMode > 0 && spr.size ? spr.size[0] : sd.w / 100, h = spr.drawMode > 0 && spr.size ? spr.size[1] : sd.h / 100;
+          if (type === 'BoxCollider2D') nc.size = [w, h];
+          else if (type === 'CircleCollider2D') nc.radius = Math.max(w, h) / 2;
+          else if (type === 'CapsuleCollider2D') { nc.size = [w, h]; nc.direction = h >= w ? 0 : 1; }
+          else if (type === 'PolygonCollider2D') nc.points = [[-w / 2, -h / 2], [w / 2, -h / 2], [w / 2, h / 2], [-w / 2, h / 2]];
+        }
+        o.comps.push(nc);
+      }
     }, 'Add Component');
     return true;
   },

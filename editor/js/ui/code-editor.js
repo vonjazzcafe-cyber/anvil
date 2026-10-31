@@ -7,6 +7,16 @@ import { el, bus, toast } from '../core/events.js';
 import { project, fileName, kindOf } from '../core/project.js';
 
 const docs = new Map();   // path -> { view, dirty }
+const wrapComp = new Map(); // path -> Compartment (word wrap on/off)
+const WRAP_KEY = 'anvil-wrap';
+let wrapOn = true;
+try { wrapOn = localStorage.getItem(WRAP_KEY) !== '0'; } catch {}
+function setWrap(on) {
+  wrapOn = on;
+  try { localStorage.setItem(WRAP_KEY, on ? '1' : '0'); } catch {}
+  for (const [path, d] of docs) d.view.dispatch({ effects: wrapComp.get(path).reconfigure(on ? EditorView.lineWrapping : []) });
+  document.querySelectorAll('.wrap-btn').forEach(b => b.classList.toggle('active', on));
+}
 let activePath = null;
 const host = () => document.getElementById('view-code');
 
@@ -103,6 +113,7 @@ function hoverSource(path) {
 function makeView(path, text) {
   const isCs = kindOf(path) === 'script';
   let saveTimer = null;
+  const wc = new Compartment(); wrapComp.set(path, wc);
   const state = EditorState.create({
     doc: text,
     extensions: [
@@ -115,10 +126,11 @@ function makeView(path, text) {
       isCs ? lintGutter() : [],
       isCs ? hoverSource(path) : [],
       keymap.of([
+        { key: 'Alt-z', preventDefault: true, run: () => { setWrap(!wrapOn); return true; } },
         { key: 'Mod-s', preventDefault: true, run: () => { saveFile(path); return true; } },
         ...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap, ...historyKeymap, ...foldKeymap, ...completionKeymap, ...lintKeymap, indentWithTab,
       ]),
-      theme,
+      theme, wc.of(wrapOn ? EditorView.lineWrapping : []),
       EditorView.updateListener.of((u) => {
         if (!u.docChanged) return;
         const d = docs.get(path); if (d) { d.dirty = true; bus.emit('code-dirty', { path, dirty: true }); }
@@ -142,7 +154,9 @@ export function openFile(path, line, col) {
   copyBtn.addEventListener('click', () => { navigator.clipboard.writeText(d.view.state.doc.toString()); toast('Copied — paste it into the same file in Unity'); });
   const saveBtn = el('button', { class: 'vbtn', text: 'Save & Compile (Ctrl+S)' });
   saveBtn.addEventListener('click', () => saveFile(path));
-  h.append(el('div', { class: 'code-bar' }, el('span', { class: 'cpath', text: path }), copyBtn, saveBtn));
+  const wrapBtn = el('button', { class: 'vbtn wrap-btn' + (wrapOn ? ' active' : ''), text: 'Wrap', title: 'Word wrap (Alt+Z)' });
+  wrapBtn.addEventListener('click', () => { setWrap(!wrapOn); d.view.focus(); });
+  h.append(el('div', { class: 'code-bar' }, el('span', { class: 'cpath', text: path }), wrapBtn, copyBtn, saveBtn));
   const hostEl = el('div', { class: 'code-host' });
   hostEl.append(d.view.dom);
   h.append(hostEl);

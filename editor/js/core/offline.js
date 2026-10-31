@@ -4,9 +4,9 @@ import { el } from './events.js';
 
 export function initOffline() {
   if (!('serviceWorker' in navigator)) return;
-  const local = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
-  const force = new URLSearchParams(location.search).has('sw');
-  if ((local && !force) || location.protocol === 'file:') return; // while developing Anvil itself, always load fresh files
+  // works on GitHub Pages and on a local server (localhost). Add ?nosw to the address to skip it.
+  // (An unpackaged development copy has an empty file list in sw.js, so it never caches anything.)
+  if (location.protocol === 'file:' || new URLSearchParams(location.search).has('nosw')) return;
   navigator.serviceWorker.register(new URL('../../../sw.js', import.meta.url), { scope: new URL('../../../', import.meta.url).pathname })
     .then((reg) => {
       const offer = (w) => { if (w && navigator.serviceWorker.controller) showUpdate(w); };

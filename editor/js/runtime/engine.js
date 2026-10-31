@@ -5,11 +5,32 @@
 // The compiled DLL is handed from the worker to the page, and cached so a reload can Play straight away.
 import { bus } from '../core/events.js';
 import { initPhysics, physicsImports } from './physics.js';
+import { exec as physics2dExec } from './physics2d.js';
+// the C# side calls one set of physics functions; which engine answers is chosen when Play starts
+let physicsCurrent = physicsImports;
+const physicsDispatch = {};
+const PHYSICS_FNS = ['reset', 'setGravity', 'createBody', 'removeBody', 'setBodyType', 'setBodyProps', 'setBodySolver', 'createCollider', 'createMeshCollider', 'removeCollider', 'setColliderLayer', 'setMassProps', 'createJoint', 'removeJoint', 'setLayerMatrix', 'setIgnorePair', 'applyCommands', 'step', 'raycast', 'raycastAll', 'shapeCast', 'shapeCastAll', 'overlap', 'closestPoint'];
+for (const k of PHYSICS_FNS) physicsDispatch[k] = (...a) => { const f = physicsCurrent[k]; return f ? f(...a) : undefined; };
+export async function usePhysicsEngine(name) {
+  if (name === 'physx') {
+    try {
+      const m = await import('./physics-physx.js');
+      await m.initPhysX();
+      physicsCurrent = m.physxImports;
+      return 'physx';
+    } catch (e) { console.error('PhysX failed to load, using Rapier', e); }
+  }
+  physicsCurrent = physicsImports;
+  return 'rapier';
+}
+import { modelMeshBytes, modelClipBytes } from '../core/models.js';
 import { startDotnet, loadRefs, buildVersion, bootTiming } from './dotnet-boot.js';
 import { storage, project } from '../core/project.js';
 
 let X = null;          // exported Interop class (page runtime)
 let lastFrame = null;  // Float64Array of the last pushed frame
+let lastExtras = null; // Float64Array: lines, trails and particles of the last frame
+let meshQueue = [], texQueue = [], audioQueue = []; // new mesh / texture data since the last tick
 let worker = null, workerReady = null, reqId = 0, workerLoaded = false;
 const pending = new Map();
 let mainReady = null;
@@ -107,8 +128,19 @@ export const engine = {
     mainReady = (async () => {
       const physics = initPhysics(); // the physics engine and .NET start side by side
       X = await startDotnet(site(), {
-        physics: physicsImports,
-        anvil: { pushFrame: (view) => { lastFrame = view.slice(); } },
+        physics: physicsDispatch,
+        physics2d: { exec: (cmd) => physics2dExec(cmd) },
+        anvil: {
+          pushFrame: (view) => { lastFrame = view.slice(); },
+          pushExtras: (view) => { lastExtras = view.slice(); },
+          uploadMesh: (uid, view) => { meshQueue.push([uid, view.slice()]); },
+          uploadTexture: (uid, w, h, flags, view) => { texQueue.push([uid, w, h, flags, view.slice()]); },
+          uploadAudio: (uid, ch, freq, view) => { audioQueue.push([uid, ch, freq, view.slice()]); },
+          modelMeshSize: (key) => modelMeshBytes(key)?.byteLength || 0,
+          modelMeshCopy: (key, view) => { const b = modelMeshBytes(key); if (b) view.set(b); },
+          modelClipSize: (key) => modelClipBytes(key)?.byteLength || 0,
+          modelClipCopy: (key, view) => { const b = modelClipBytes(key); if (b) view.set(b); },
+        },
       }, {}, pageCompiler ? null : /^Microsoft\.CodeAnalysis/);
       await physics;
       X.InitEngine();
@@ -179,12 +211,13 @@ export const engine = {
     const run = () => { try { X.PrepareNextPlay(); } catch (e) { } };
     if (window.requestIdleCallback) requestIdleCallback(run, { timeout: 3000 }); else setTimeout(run, 300);
   },
-  endPlay() { X.EndPlay(); return X.Frame(); },
-  tick(dt) { const ev = X.Tick(dt); return { events: ev, frame: lastFrame }; },
-  frame() { const ev = X.Frame(); return { events: ev, frame: lastFrame }; },
+  endPlay() { X.EndPlay(); const ev = X.Frame(); meshQueue = []; texQueue = []; audioQueue = []; return ev; },
+  tick(dt) { const ev = X.Tick(dt); return takeFrame(ev); },
+  frame() { const ev = X.Frame(); return takeFrame(ev); },
   setScreen(w, h) { X.SetScreen(w | 0, h | 0); },
   setInput(held, down, up, chars, mx, my, bh, bd, bu, wheel) { X.SetInput(held, down, up, chars, mx, my, bh, bd, bu, wheel); },
   inspect(id) { return X.Inspect(id); },
+  uiPreview(json, w, h) { return X && X.UIPreview ? X.UIPreview(json, w | 0, h | 0) : '{}'; },
   setValue(id, comp, member, json) { return X.SetValue(id, comp, member, json); },
   listFiles() { return JSON.parse(X.ListFiles()); },
   readFile(p) { return X.ReadFile(p); },
@@ -192,6 +225,12 @@ export const engine = {
   requestHierarchy() { X.RequestHierarchy(); },
 };
 bus.engine = engine;
+
+function takeFrame(ev) {
+  const r = { events: ev, frame: lastFrame, extras: lastExtras, meshes: meshQueue, textures: texQueue, audioClips: audioQueue };
+  meshQueue = []; texQueue = []; audioQueue = [];
+  return r;
+}
 
 function updateStatus() {
   if (engine.error) return;

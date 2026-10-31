@@ -8,6 +8,8 @@ import { field, numberInput, vectorEditor, colorEditor, enumEditor, flagsEditor,
 import { showMenu } from './menus.js';
 import { pick, prompt } from './dialogs.js';
 import { renderSettings } from './settings.js';
+import { rectTransformBlock, eventEditor, optionsEditor } from './ui-inspector.js';
+import { renderControllerEditor, clipField, clipLabel, newControllerData, allClips, controllerPathFor } from './controller-editor.js';
 
 const host = () => document.getElementById('inspector');
 export const scriptMeta = new Map();   // class name -> meta from the last successful compile
@@ -23,7 +25,20 @@ const BUILTIN_BASES = {
   BoxCollider: ['Collider'], SphereCollider: ['Collider'], CapsuleCollider: ['Collider'], MeshCollider: ['Collider'], CharacterController: ['Collider'],
   MeshRenderer: ['Renderer'], Camera: ['Behaviour'], Light: ['Behaviour'], AudioSource: ['Behaviour'], AudioListener: ['Behaviour'],
   HingeJoint: ['Joint'], FixedJoint: ['Joint'], SpringJoint: ['Joint'], ConfigurableJoint: ['Joint'], CharacterJoint: ['Joint'],
+  RectTransform: ['Transform'],
 };
+{
+  const UIB = ['UIBehaviour', 'MonoBehaviour', 'Behaviour'];
+  for (const k of ['Image', 'RawImage', 'Text']) BUILTIN_BASES[k] = ['MaskableGraphic', 'Graphic', ...UIB];
+  for (const k of ['TextMeshProUGUI', 'TextMeshPro']) BUILTIN_BASES[k] = ['TMP_Text', 'MaskableGraphic', 'Graphic', ...UIB];
+  for (const k of ['Button', 'Toggle', 'Slider', 'Scrollbar', 'InputField', 'TMP_InputField', 'Dropdown', 'TMP_Dropdown']) BUILTIN_BASES[k] = ['Selectable', ...UIB];
+  for (const k of ['ScrollRect', 'Mask', 'RectMask2D', 'CanvasScaler', 'ToggleGroup', 'LayoutElement', 'ContentSizeFitter', 'AspectRatioFitter', 'EventSystem', 'StandaloneInputModule', 'InputSystemUIInputModule']) BUILTIN_BASES[k] = [...UIB];
+  for (const k of ['HorizontalLayoutGroup', 'VerticalLayoutGroup']) BUILTIN_BASES[k] = ['HorizontalOrVerticalLayoutGroup', 'LayoutGroup', ...UIB];
+  BUILTIN_BASES.GridLayoutGroup = ['LayoutGroup', ...UIB];
+  BUILTIN_BASES.GraphicRaycaster = ['BaseRaycaster', ...UIB];
+  BUILTIN_BASES.Canvas = ['Behaviour']; BUILTIN_BASES.CanvasGroup = ['Behaviour'];
+  BUILTIN_BASES.Shadow = ['BaseMeshEffect', ...UIB]; BUILTIN_BASES.Outline = ['Shadow', 'BaseMeshEffect', ...UIB];
+}
 function typeChain(compType, script) {
   const chain = [];
   if (compType === 'Script') {
@@ -113,10 +128,12 @@ function renderObject(h, o) {
   h.append(el('div', { class: 'insp-row2' }, el('label', {}, 'Tag', tagSel), el('label', {}, 'Layer', layerSel)));
   if (o.prefab) h.append(el('div', { class: 'insp-note info', text: `Copy of prefab ${baseName(o.prefab)}. Changes here don't change the prefab asset.` }));
 
-  // Transform
-  h.append(transformBlock(o));
+  // Transform (a RectTransform on UI objects)
+  const rti = o.comps.findIndex(c => c.type === 'RectTransform');
+  if (rti >= 0) h.append(rectTransformBlock(o, rti, { compHead, showMenu, folded, render, edit, transformEditorsSet: (t) => { transformEditors = t; } }));
+  else h.append(transformBlock(o));
   // components
-  o.comps.forEach((c, ci) => h.append(componentBlock(o, c, ci)));
+  o.comps.forEach((c, ci) => { if (c.type !== 'RectTransform') h.append(componentBlock(o, c, ci)); });
   const btn = el('button', { class: 'btn', text: 'Add Component' });
   btn.addEventListener('click', () => addComponentDialog(o));
   h.append(el('div', { class: 'add-comp' }, btn));
@@ -242,6 +259,12 @@ function editIO(o, ci, c) {
   };
 }
 
+const PRIMITIVE_MESHES = ['Cube', 'Sphere', 'Capsule', 'Cylinder', 'Plane', 'Quad'];
+function meshLabel(v) {
+  if (typeof v !== 'string') return v?.name || null;
+  const i = v.lastIndexOf('#'); if (i < 0) return v;
+  const f = project.file(v.slice(0, i)); return f?.data?.meshes?.[+v.slice(i + 1)]?.name || 'Missing (Mesh)';
+}
 // io: { comp, get(keyPath), set(keyPath, value, live, rerender), bind?(keyPath, field, editor), canEdit?(field), display?(keyPath) }
 function renderBuiltinField(body, io, f, keyPath) {
   const c = io.comp;
@@ -258,6 +281,40 @@ function renderBuiltinField(body, io, f, keyPath) {
     case 'color': ed = colorEditor(val, set); break;
     case 'range': ed = rangeEditor(val ?? f.default, f.min, f.max, set); break;
     case 'enum': ed = enumEditor(f.options, f.values, val, (v) => io.set(keyPath, v, false, true)); if (ro) ed.disabled = true; break;
+    case 'string': ed = textEditor(val ?? '', (v) => io.set(keyPath, v), { multiline: f.textArea || 0 }); break;
+    case 'vec2': ed = vectorEditor(val || [0, 0], set, { labels: f.labels || ['X', 'Y'], readOnly: ro }); break;
+    case 'vec2list': {
+      // a list of 2D points (PolygonCollider2D / EdgeCollider2D outlines)
+      const pts = Array.isArray(val) ? val.map(p => [p[0] || 0, p[1] || 0]) : (f.default || []).map(p => p.slice());
+      const fk = io.foldKey + ':' + keyPath;
+      const open = openFolds.has('open:' + fk);
+      body.append(foldout(f.label + ' (' + pts.length + ')', open, (v) => { if (v) openFolds.add('open:' + fk); else openFolds.delete('open:' + fk); render(); }));
+      if (open) {
+        pts.forEach((p, i) => {
+          const row = vectorEditor(p, (v, live) => { const n = pts.map(q => q.slice()); n[i] = v; io.set(keyPath, n, live); });
+          const del = el('button', { class: 'btn small', text: '×', title: 'Remove point', style: { flex: 'none', marginLeft: '4px' } });
+          del.addEventListener('click', () => { if (pts.length <= 2) return; const n = pts.filter((_, k) => k !== i); io.set(keyPath, n, false, true); });
+          const w = el('div', { class: 'vec' }, row, del);
+          body.append(field('Point ' + i, w, { cls: 'sub' }));
+        });
+        const add = el('button', { class: 'btn small', text: '+ Add Point' });
+        add.addEventListener('click', () => { const last = pts[pts.length - 1] || [0, 0], first = pts[0] || [0, 0]; const n = pts.map(q => q.slice()); n.push([(last[0] + first[0]) / 2 + 0.1, (last[1] + first[1]) / 2 + 0.1]); io.set(keyPath, n, false, true); });
+        body.append(field('', add, { cls: 'sub' }));
+      }
+      return;
+    }
+    case 'vec4': ed = vectorEditor(val || [0, 0, 0, 0], set, { labels: f.labels || ['X', 'Y', 'Z', 'W'], readOnly: ro }); break;
+    case 'flags': ed = flagsEditor(f.options, f.bits, val || 0, (v) => io.set(keyPath, v, false, true)); break;
+    case 'event': {
+      if (editor.playing) { body.append(el('div', { class: 'insp-note info', text: f.label + ' — listeners can be edited after you stop.' })); return; }
+      body.append(eventEditor(f.label, val, f.args || [], (v) => io.set(keyPath, v, false, true), scriptMeta));
+      return;
+    }
+    case 'options': {
+      body.append(field(f.label, el('span')));
+      body.append(optionsEditor(val, (v) => io.set(keyPath, v, false, true)));
+      return;
+    }
     case 'constraints': {
       const boxes = [];
       const row = (label, bits) => {
@@ -284,7 +341,7 @@ function renderBuiltinField(body, io, f, keyPath) {
     case 'asset': {
       const kind = f.assetType;
       const matches = (p) => kind === 'inputactions' ? p.endsWith('.inputactions') : project.file(p)?.kind === kind;
-      const label = kind === 'material' ? 'Material' : kind === 'inputactions' ? 'Input Action Asset' : 'Physics Material';
+      const label = kind === 'controller' ? 'Animator Controller' : kind === 'material' ? 'Material' : kind === 'inputactions' ? 'Input Action Asset' : kind === 'texture' ? (f.key === 'sprite' ? 'Sprite' : 'Texture') : kind === 'audio' ? 'AudioClip' : kind === 'physicsMaterial2D' ? 'Physics Material 2D' : 'Physics Material';
       const shown = io.display ? io.display(keyPath) : (val ? baseName(val) : null);
       ed = objectField(shown, label, {
         onPick: ro ? null : async () => {
@@ -296,6 +353,49 @@ function renderBuiltinField(body, io, f, keyPath) {
         onClear: ro ? null : () => io.set(keyPath, null, false, true),
         onPing: () => typeof val === 'string' && project.file(val) && bus.emit('ping-asset', val),
       });
+      break;
+    }
+    case 'mesh': {
+      const shown = val ? meshLabel(val) : null;
+      ed = objectField(shown, 'Mesh', {
+        onPick: ro ? null : async () => {
+          const items = [{ label: 'None', value: null }, ...PRIMITIVE_MESHES.map(p => ({ label: p, value: p }))];
+          for (const [p, mf] of Object.entries(project.data.files)) if (mf.kind === 'model') (mf.data?.meshes || []).forEach((m, i) => items.push({ label: m.name, hint: p, value: `${p}#${i}` }));
+          const v = await pick('Select Mesh', items);
+          if (v !== undefined) { io.set(keyPath, v, false, true); render(); }
+        },
+        onClear: ro ? null : () => io.set(keyPath, null, false, true),
+        onPing: () => { const p = typeof val === 'string' && val.includes('#') ? val.slice(0, val.lastIndexOf('#')) : null; if (p && project.file(p)) bus.emit('ping-asset', p); },
+      });
+      break;
+    }
+    case 'clip': {
+      ed = clipField(val, (v) => { io.set(keyPath, v, false, true); render(); });
+      break;
+    }
+    case 'clipList': {
+      const list = Array.isArray(val) ? val : [];
+      body.append(field(f.label, el('span', { text: 'Size ' + list.length, style: { color: '#999' } })));
+      list.forEach((item, i) => { const r = field('Element ' + i, clipField(item, (v) => { const nl = list.slice(); if (v == null) nl.splice(i, 1); else nl[i] = v; io.set(keyPath, nl, false, true); render(); })); r.classList.add('sub'); body.append(r); });
+      const add = el('button', { class: 'btn', text: '+ Clip' }); add.addEventListener('click', () => { io.set(keyPath, [...list, null], false, true); render(); });
+      body.append(el('div', { style: { margin: '2px 0 4px 20px' } }, add));
+      return;
+    }
+    case 'assetList': {
+      const list = Array.isArray(val) ? val : [];
+      body.append(field(f.label, el('span', { text: 'Size ' + list.length, style: { color: '#999' } }), { tip: f.tip }));
+      list.forEach((item, i) => {
+        const sub = Object.assign({}, f, { type: 'asset', label: 'Element ' + i });
+        const subIo = Object.assign({}, io, { get: () => item, set: (kp, v) => { const nl = list.slice(); nl[i] = v; io.set(keyPath, nl, false, true); }, display: null });
+        renderBuiltinField(body, subIo, sub, keyPath + '.' + i);
+        body.lastChild.classList.add('sub');
+      });
+      return;
+    }
+    case 'refList': {
+      const list = Array.isArray(val) ? val : [];
+      const names = list.slice(0, 6).map(r => r && typeof r.ref === 'number' ? (editor.get(r.ref)?.name || 'Missing') : 'None');
+      ed = el('span', { text: list.length ? `${list.length}: ${names.join(', ')}${list.length > 6 ? '…' : ''}` : 'None', style: { color: '#aaa', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } });
       break;
     }
     case 'actionmap': {
@@ -355,6 +455,11 @@ export function renderScriptField(body, f, value, set, o, ci, path, depth = 0) {
     case 'bool': ed = boolEditor(v, (nv) => set(nv, false)); break;
     case 'string': ed = textEditor(v ?? '', (nv) => set(nv, false), { multiline: f.textArea || 0 }); break;
     case 'char': ed = textEditor(v ?? '', (nv) => set(nv.slice(0, 1), false)); break;
+    case 'event': {
+      if (liveIO) { body.append(el('div', { class: 'insp-note info', text: label + ' (edit after you stop)' })); return; }
+      body.append(eventEditor(label, Array.isArray(value) ? value : [], f.eventArgs || [], (nv) => { set(nv, false); render(); }, scriptMeta));
+      return;
+    }
     case 'enum':
       if (f.flags) ed = flagsEditor(f.enumNames, f.enumValues, v ?? 0, (nv) => set(nv, false));
       else ed = enumEditor(f.enumNames, f.enumValues, v ?? f.enumValues[0], (nv) => set(nv, false));
@@ -464,7 +569,7 @@ function refCandidates(f, selfObj) {
   const rt = f.refType, items = [];
   if (f.refKind === 'GameObject' || rt === 'Transform') {
     for (const x of editor.objects) items.push({ label: x.name, hint: 'Scene · ' + editor.path(x.id), value: { ref: x.id } });
-    if (f.refKind === 'GameObject') for (const p of Object.keys(project.data.files)) if (project.file(p).kind === 'prefab') items.push({ label: baseName(p), hint: 'Prefab · ' + p, value: { asset: p } });
+    if (f.refKind === 'GameObject') for (const p of Object.keys(project.data.files)) if (project.file(p).kind === 'prefab' || project.file(p).kind === 'model') items.push({ label: baseName(p), hint: (project.file(p).kind === 'model' ? 'Model · ' : 'Prefab · ') + p, value: { asset: p } });
   } else if (f.refKind === 'Component') {
     for (const x of editor.objects) if (x.comps.some(c => compMatches(c, rt))) items.push({ label: x.name, hint: 'Scene · ' + editor.path(x.id), value: { ref: x.id } });
     for (const p of Object.keys(project.data.files)) { const fl = project.file(p); if (fl.kind === 'prefab' && fl.data?.objects?.[0]?.comps.some(c => compMatches(c, rt))) items.push({ label: baseName(p), hint: 'Prefab · ' + p, value: { asset: p } }); }
@@ -472,8 +577,17 @@ function refCandidates(f, selfObj) {
     for (const p of Object.keys(project.data.files)) { const fl = project.file(p); if (fl.kind === 'asset' && typeChain('Script', fl.data?.script).includes(rt)) items.push({ label: baseName(p), hint: p, value: { asset: p } }); }
   } else if (f.refKind === 'Material') {
     for (const p of Object.keys(project.data.files)) if (project.file(p).kind === 'material') items.push({ label: baseName(p), hint: p, value: { asset: p } });
-  } else if (f.refKind === 'PhysicsMaterial') {
-    for (const p of Object.keys(project.data.files)) if (project.file(p).kind === 'physicsMaterial') items.push({ label: baseName(p), hint: p, value: { asset: p } });
+  } else if (f.refKind === 'PhysicsMaterial' || f.refKind === 'PhysicsMaterial2D') {
+    const want = f.refKind === 'PhysicsMaterial' ? 'physicsMaterial' : 'physicsMaterial2D';
+    for (const p of Object.keys(project.data.files)) if (project.file(p).kind === want) items.push({ label: baseName(p), hint: p, value: { asset: p } });
+  } else if (f.refKind === 'AudioClip') {
+    for (const p of Object.keys(project.data.files)) if (project.file(p).kind === 'audio') items.push({ label: baseName(p), hint: p, value: { asset: p } });
+  } else if (f.refKind === 'Texture') {
+    for (const p of Object.keys(project.data.files)) if (project.file(p).kind === 'texture') items.push({ label: baseName(p), hint: p, value: { asset: p } });
+  } else if (f.refKind === 'Mesh') {
+    for (const [p, fl] of Object.entries(project.data.files)) if (fl.kind === 'model') (fl.data?.meshes || []).forEach((m, i) => items.push({ label: m.name, hint: p, value: { asset: `${p}#${i}` } }));
+  } else if (f.refKind === 'AnimationClip') {
+    for (const [p, fl] of Object.entries(project.data.files)) if (fl.kind === 'model') (fl.data?.clips || []).forEach((c, i) => items.push({ label: c.name, hint: p, value: { asset: `${p}#clip${i}` } }));
   } else if (f.refKind === 'TextAsset') {
     for (const p of Object.keys(project.data.files)) if (isTextAsset(p)) items.push({ label: baseName(p), hint: p, value: { asset: p } });
   } else if (f.refKind === 'InputActionAsset') {
@@ -499,8 +613,8 @@ function refField(f, v, set, o) {
         else toast(`Type mismatch: needs ${f.refType}`);
       } else if (asset) {
         const k = kindOf(asset);
-        const ok = (k === 'prefab' && (f.refKind === 'GameObject' || f.refKind === 'Component')) || (k === 'asset' && f.refKind === 'ScriptableObject') || (k === 'material' && f.refKind === 'Material') || (k === 'physicsMaterial' && f.refKind === 'PhysicsMaterial')
-          || (k === 'text' && f.refKind === 'TextAsset') || (asset.endsWith('.inputactions') && f.refKind === 'InputActionAsset');
+        const ok = (k === 'prefab' && (f.refKind === 'GameObject' || f.refKind === 'Component')) || (k === 'asset' && f.refKind === 'ScriptableObject') || (k === 'material' && f.refKind === 'Material') || (k === 'physicsMaterial' && f.refKind === 'PhysicsMaterial') || (k === 'physicsMaterial2D' && f.refKind === 'PhysicsMaterial2D')
+          || (k === 'text' && f.refKind === 'TextAsset') || (k === 'texture' && f.refKind === 'Texture') || (k === 'audio' && f.refKind === 'AudioClip') || (asset.endsWith('.inputactions') && f.refKind === 'InputActionAsset');
         if (ok) set({ asset }, false); else toast(`Type mismatch: needs ${f.refType}`);
       }
     },
@@ -568,9 +682,32 @@ function renderAsset(h, path) {
     const save = (k, v) => { edit(() => { d[k] = v; project.touch('material'); bus.emit('scene-changed', { label: 'Material' }); }); };
     body.append(el('div', { class: 'insp-note info', text: 'Universal Render Pipeline/Lit' }));
     body.append(field('Base Map', colorEditor(d.color, (v) => save('color', v))));
+    const texF = objectField(d.texture ? baseName(d.texture) : null, 'Texture', {
+      onPick: async () => { const items = [{ label: 'None', value: null }, ...Object.keys(project.data.files).filter(p => project.file(p).kind === 'texture').map(p => ({ label: baseName(p), hint: p, value: p }))]; const v = await pick('Select Texture', items); if (v !== undefined) { save('texture', v); render(); } },
+      onDrop: ({ asset }) => { if (asset && project.file(asset)?.kind === 'texture') { save('texture', asset); render(); } },
+      onClear: () => { save('texture', null); render(); },
+      onPing: () => d.texture && bus.emit('ping-asset', d.texture),
+    });
+    body.append(field('Base Map Texture', texF, { tip: 'An image from Assets, tinted by the colour above' }));
     body.append(field('Metallic', rangeEditor(d.metallic ?? 0, 0, 1, (v) => save('metallic', v))));
     body.append(field('Smoothness', rangeEditor(d.smoothness ?? 0.5, 0, 1, (v) => save('smoothness', v))));
     body.append(field('Emission', colorEditor(d.emission || [0, 0, 0, 1], (v) => save('emission', v), { alpha: false })));
+  } else if (kind === 'audio') {
+    const d = f.data || {};
+    body.append(el('div', { class: 'insp-note info', text: `AudioClip · ${(d.len || 0).toFixed(2)} s · ${d.ch === 1 ? 'mono' : 'stereo'} · ${d.freq || '?'} Hz` }));
+    if (d.url) { const a = el('audio', { controls: '', src: d.url, style: { width: 'calc(100% - 16px)', margin: '8px' } }); body.append(a); }
+    body.append(el('div', { class: 'insp-note', text: 'Put it on an Audio Source (AudioClip), or use an AudioClip field in a script with audioSource.PlayOneShot(clip).' }));
+  } else if (kind === 'texture') {
+    const d = f.data || {};
+    body.append(el('div', { class: 'insp-note info', text: `Texture Type: Sprite (2D and UI) · ${d.w || '?'} × ${d.h || '?'} px` }));
+    if (d.url) body.append(el('div', { style: { margin: '8px', height: '220px', background: `#222 url(${d.url}) center/contain no-repeat`, border: '1px solid #111', borderRadius: '3px' } }));
+    body.append(el('div', { class: 'insp-note', text: 'Use it on a Sprite Renderer (drag it into the Scene to make a sprite), a UI Image (Source Image), a Raw Image, or a material (Base Map Texture). In scripts: a Sprite or Texture2D field, or Resources.Load from a Resources folder.' }));
+  } else if (kind === 'physicsMaterial2D') {
+    const d = f.data || (f.data = { friction: 0.4, bounciness: 0 });
+    const save = (k, v) => edit(() => { d[k] = v; project.touch('physicsMaterial2D'); });
+    body.append(field('Friction', numberInput(d.friction ?? 0.4, (v) => save('friction', v), { min: 0 })));
+    body.append(field('Bounciness', numberInput(d.bounciness ?? 0, (v) => save('bounciness', v), { min: 0 })));
+    body.append(el('div', { class: 'insp-note', text: 'Drag onto a 2D collider or a Rigidbody 2D. Box2D mixes two materials like Unity: friction = √(a·b), bounciness = the larger one.' }));
   } else if (kind === 'physicsMaterial') {
     const d = f.data || (f.data = { dynamicFriction: 0.6, staticFriction: 0.6, bounciness: 0, frictionCombine: 0, bounceCombine: 0 });
     const save = (k, v) => edit(() => { d[k] = v; project.touch('physicsMaterial'); });
@@ -586,6 +723,27 @@ function renderAsset(h, path) {
     body.append(field('Script', objectField(d.script || null, 'MonoScript', { onPing: () => { const p = findScriptFile(d.script); if (p) bus.emit('ping-asset', p); } })));
     if (!meta) body.append(el('div', { class: 'insp-note', text: 'The associated script can not be loaded. Please fix any compile errors.' }));
     else for (const fl of meta.fields) renderScriptField(body, fl, getPath(d.fields || {}, fl.name), (v) => edit(() => { d.fields = d.fields || {}; d.fields[fl.name] = v; project.touch('asset'); render(); }), null, 0, fl.name);
+  } else if (kind === 'controller') {
+    renderControllerEditor(body, path, f, () => edit(() => project.touch('controller')), render);
+  } else if (kind === 'model') {
+    const d = f.data || {};
+    const verts = (d.meshes || []).reduce((a, m) => a + (m.verts || 0), 0);
+    body.append(el('div', { class: 'insp-note info', text: `Model (.${d.fmt}) · ${((d.size || 0) / 1024).toFixed(0)} KB · ${(d.meshes || []).length} mesh(es), ${verts} vertices · ${(d.objects || []).length} GameObject(s)` }));
+    body.append(el('div', { class: 'insp-note', text: 'Drag it into the Hierarchy or Scene to place it, or into a GameObject field so a script can Instantiate() it. Its materials were extracted next to it and can be edited.' }));
+    const list = (title, items) => { if (!items.length) return; body.append(el('div', { style: { color: '#ddd', margin: '8px 8px 2px', fontWeight: '600' }, text: title })); for (const t of items) body.append(el('div', { style: { color: '#aaa', margin: '1px 16px' }, text: t })); };
+    list('Meshes', (d.meshes || []).map(m => `${m.name} · ${m.verts} verts${m.subs > 1 ? ' · ' + m.subs + ' sub-meshes' : ''}`));
+    if ((d.clips || []).length) {
+      body.append(el('div', { style: { color: '#ddd', margin: '8px 8px 2px', fontWeight: '600' }, text: 'Animation clips' }));
+      d.clips.forEach((c) => body.append(field(`${c.name} · ${c.length.toFixed(2)} s`, el('label', { style: { display: 'flex', gap: '4px', alignItems: 'center' } }, boolEditor(!!c.loop, (v) => edit(() => { c.loop = v; project.touch('model'); })), 'Loop Time'))));
+      const mk = el('button', { class: 'btn', text: 'Create Animator Controller' });
+      mk.addEventListener('click', () => {
+        const p = project.uniquePath(path.slice(0, path.lastIndexOf('/')), baseName(path) + ' Controller', 'controller');
+        project.writeData(p, newControllerData(allClips().filter(c => c.model === path)));
+        bus.emit('ping-asset', p);
+      });
+      body.append(el('div', { style: { margin: '6px 8px' } }, mk));
+    }
+    list('Materials', (d.materials || []).map(baseName));
   } else if (kind === 'prefab') {
     const root = f.data?.objects?.[0];
     body.append(el('div', { class: 'insp-note info', text: `Prefab with ${f.data?.objects?.length || 0} GameObject(s). Drag it into the Hierarchy or Scene to place a copy, or into a script's GameObject field so Instantiate() can spawn it.` }));

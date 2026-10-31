@@ -38,7 +38,7 @@ export function initHierarchy() {
     const id = +e.dataTransfer.getData('anvil/object');
     if (id && !editor.playing) editor.reparent(id, 0, null, true);
     const asset = e.dataTransfer.getData('anvil/asset');
-    if (asset && kindOf(asset) === 'prefab') editor.instantiatePrefab(asset, 0);
+    if (asset && (kindOf(asset) === 'prefab' || kindOf(asset) === 'model')) editor.instantiatePrefab(asset, 0);
   });
   render();
 }

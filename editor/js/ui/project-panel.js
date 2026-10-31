@@ -15,7 +15,7 @@ let renameDraft = null;
 let collapsed = new Set();
 let search = '';
 
-const ICON = { script: '#', scene: '◈', prefab: '❒', material: '', physicsMaterial: '◒', asset: '◆', text: '≡', folder: '📁' };
+const ICON = { script: '#', scene: '◈', prefab: '❒', material: '', physicsMaterial: '◒', physicsMaterial2D: '◒', asset: '◆', text: '≡', folder: '📁' };
 
 export function initProjectPanel() {
   bus.on('project-changed', (w) => { if (w === 'files' || w === 'scene' || w === 'settings') render(); });
@@ -87,8 +87,12 @@ function renderGrid(grid) {
 function item(path, kind) {
   const isSel = selected === path;
   const a = el('div', { class: 'asset' + (isSel ? ' selected' : ''), draggable: 'true', title: path });
-  const icon = el('div', { class: 'aicon ' + ({ folder: 'folder', script: 'script', scene: 'scene', prefab: 'prefab', material: 'material', physicsMaterial: 'physmat', asset: 'asset', text: 'text' }[kind] || 'text'), text: kind === 'script' ? '#' : ICON[kind] || '≡' });
+  const icon = el('div', { class: 'aicon ' + ({ folder: 'folder', script: 'script', scene: 'scene', prefab: 'prefab', material: 'material', physicsMaterial: 'physmat', physicsMaterial2D: 'physmat', asset: 'asset', text: 'text' }[kind] || 'text'), text: kind === 'script' ? '#' : ICON[kind] || '≡' });
   if (kind === 'material') { const c = project.file(path).data?.color || [1, 1, 1, 1]; icon.style.background = `rgb(${c.slice(0, 3).map(v => Math.round(Math.pow(v, 1 / 1) * 255)).join(',')})`; }
+  if (kind === 'audio') icon.textContent = '♪';
+  if (kind === 'model') icon.textContent = '⬢';
+  if (kind === 'controller') icon.textContent = '⇄';
+  if (kind === 'texture') { const u = project.file(path).data?.url; if (u) { icon.textContent = ''; icon.style.background = `#2a2a2a url(${u}) center/contain no-repeat`; } }
   a.append(icon);
   if (renaming === path) {
     const ext = kind === 'folder' ? '' : fileName(path).slice(baseName(path).length);
@@ -169,6 +173,8 @@ function createMenu(dir) {
     '-',
     { label: 'Scene', action: () => { const p = project.uniquePath(dir, 'New Scene', 'unity'); project.writeData(p, newSceneData()); renaming = p; render(); } },
     { label: 'Material', action: () => { const p = project.uniquePath(dir, 'New Material', 'mat'); project.writeData(p, { color: [1, 1, 1, 1], metallic: 0, smoothness: 0.5 }); renaming = p; selected = p; render(); bus.emit('asset-selected', p); } },
+    { label: 'Animator Controller', action: async () => { const { newControllerData } = await import('./controller-editor.js'); const p = project.uniquePath(dir, 'New Animator Controller', 'controller'); project.writeData(p, newControllerData()); renaming = p; selected = p; render(); bus.emit('asset-selected', p); } },
+    { label: 'Physics Material 2D', action: () => { const p = project.uniquePath(dir, 'New Physics Material 2D', 'physicsMaterial2D'); project.writeData(p, { friction: 0.4, bounciness: 0 }); renaming = p; render(); } },
     { label: 'Physics Material', action: () => { const p = project.uniquePath(dir, 'New Physics Material', 'physicMaterial'); project.writeData(p, { dynamicFriction: 0.6, staticFriction: 0.6, bounciness: 0, frictionCombine: 0, bounceCombine: 0 }); renaming = p; render(); } },
     { label: 'Text File', action: () => { const p = project.uniquePath(dir, 'New Text', 'txt'); project.writeText(p, ''); renaming = p; render(); } },
     { label: 'Input Actions', action: () => { const p = project.uniquePath(dir, 'New Actions', 'inputactions'); project.writeText(p, defaultInputActions().replace('"InputSystem_Actions"', JSON.stringify(baseName(p)))); renaming = p; render(); } },
@@ -258,12 +264,59 @@ function onKey(e) {
   else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') { duplicateAsset(selected); e.preventDefault(); }
 }
 
+// images become texture assets (kept as a data URL, max 2048 px like a default Unity import)
+export async function readImage(file) {
+  const url = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); });
+  const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error('not an image')); i.src = url; });
+  let w = img.naturalWidth, h = img.naturalHeight, out = url;
+  if (Math.max(w, h) > 2048) {
+    const k = 2048 / Math.max(w, h); w = Math.round(w * k); h = Math.round(h * k);
+    const c = document.createElement('canvas'); c.width = w; c.height = h; c.getContext('2d').drawImage(img, 0, 0, w, h); out = c.toDataURL('image/png');
+  }
+  return { url: out, w, h };
+}
+export function importAssetsDialog() {
+  const input = document.createElement('input'); input.type = 'file'; input.multiple = true;
+  input.onchange = async () => { for (const f of input.files) await importFile(f, current); render(); };
+  input.click();
+}
 async function importFile(file, dir) {
   const name = file.name;
+  if (kindOf(name) === 'model') {
+    try {
+      const { importModelFile } = await import('../core/models.js');
+      toast('Importing ' + name + '…');
+      await importModelFile(file, dir);
+      toast('Imported ' + name);
+    } catch (e) { console.error(e); toast(name + ': could not read this model (' + (e.message || e) + ')', 'error'); }
+    return;
+  }
+  if (kindOf(name) === 'audio') {
+    try {
+      const url = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); });
+      const { probeAudio } = await import('../runtime/audio.js');
+      const info = await probeAudio(url);
+      const ext = name.split('.').pop().toLowerCase();
+      const path = project.uniquePath(dir, name.replace(/\.[^.]+$/, ''), ext);
+      project.writeData(path, Object.assign({ url }, info));
+      toast('Imported ' + name);
+    } catch (e) { toast(name + ': could not read this sound (' + (e.message || e) + ')', 'error'); }
+    return;
+  }
+  if (kindOf(name) === 'texture') {
+    try {
+      const data = await readImage(file);
+      const ext = name.split('.').pop().toLowerCase();
+      const path = project.uniquePath(dir, name.replace(/\.[^.]+$/, ''), ext);
+      project.writeData(path, Object.assign(data, { sprite: true }));
+      toast('Imported ' + name);
+    } catch (e) { toast(name + ': ' + e.message, 'error'); }
+    return;
+  }
   const text = await file.text();
   const path = project.uniquePath(dir, name.replace(/\.[^.]+$/, ''), name.includes('.') ? name.split('.').pop() : 'txt');
   const kind = kindOf(path);
-  if (kind === 'scene' || kind === 'prefab' || kind === 'material' || kind === 'asset' || kind === 'physicsMaterial') {
+  if (kind === 'scene' || kind === 'prefab' || kind === 'material' || kind === 'asset' || kind === 'physicsMaterial' || kind === 'physicsMaterial2D' || kind === 'controller') {
     try { project.writeData(path, JSON.parse(text)); } catch { toast(`${name}: Unity's own ${kind} files can't be read; only Anvil JSON ones.`, 'error'); return; }
   } else project.writeText(path, text);
   if (kind === 'script') bus.emit('scripts-changed', { compile: true });
