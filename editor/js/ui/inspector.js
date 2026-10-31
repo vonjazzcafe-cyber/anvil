@@ -856,7 +856,9 @@ function buildLive(h, id, m, shape) {
   const scroll = h.scrollTop;
   h.innerHTML = '';
   h.classList.add('playmode-tint');
+  h.append(el('div', { class: 'playmode-banner', text: '▶ Playing: changes here are undone when you press Stop' }));
   const set = (comp, member, value) => {
+    bus.emit('play-edit');
     const err = engine.setValue(id, comp, member, liveJson(value));
     if (err) toast(`Couldn't change ${member}: ${err}`);
     liveState = null; // read it back on the next tick

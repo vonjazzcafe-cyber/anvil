@@ -152,6 +152,7 @@ export async function play(compileFn) {
   T.push(performance.now());
   if (!ok) { toast('All compiler errors have to be fixed before you can enter playmode!', 'error'); bus.emit('show-bottom-tab', 'console'); return; }
   onPlayStart();
+  playEdits = 0;
   wasMode = viewport.mode;
   bus.emit('show-center-tab', 'game');
   editor.playing = true; editor.paused = false;
@@ -249,8 +250,19 @@ export function stepOnce() {
   step(project.settings.fixedTimestep || 0.02);
 }
 
+// Like Unity, whatever you change while playing is thrown away at Stop. Anvil says so, because a reference dragged
+// into a slot during Play otherwise just quietly disappears.
+let playEdits = 0;
+bus.on('play-edit', () => {
+  if (!editor.playing) return;
+  if (playEdits++ === 0) toast('You are playing: this change only lasts until you press Stop.', 'warn', 4500);
+});
 export function stop(fromError = false) {
   if (!editor.playing) return;
+  if (playEdits > 0) {
+    toast(`${playEdits} change${playEdits > 1 ? 's' : ''} made while playing ${playEdits > 1 ? 'were' : 'was'} undone, like in Unity. To keep values, use the component's ⋮ › Copy Component while playing, then ⋮ › Paste Component Values after stopping — or just make the change again now.`, 'warn', 9000);
+    playEdits = 0;
+  }
   cancelAnimationFrame(raf);
   try { if (!fromError) { const ev = engine.endPlay(); applyEvents({ events: ev, frame: null }); } else engine.endPlay(); } catch (e) { }
   editor.playing = false; editor.paused = false; editor.runtime = null;
