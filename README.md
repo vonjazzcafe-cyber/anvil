@@ -75,7 +75,7 @@ Anvil runs the same C# against a re-implementation of the UnityEngine API, so sc
 
 | | |
 |---|---|
-| Q W E R | View / Move / Rotate / Scale tool |
+| Q W E R T | View / Move / Rotate / Scale / Resize tool (Resize: drag a coloured handle on a side to stretch the object that way; the opposite side stays put) |
 | F | Frame selected |
 | Right-drag + WASD/QE | Fly the Scene camera |
 | W A S D (no right-click; Shift = faster) | Move the Scene camera forward/back/sideways along the ground, relative to where it looks. A quick tap of W still picks the Move tool |

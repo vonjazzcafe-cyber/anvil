@@ -1,6 +1,7 @@
 // Anvil — 3D viewport (three.js): Scene view (editor camera, gizmos) and Game view (the scene's camera).
 import * as THREE from 'three';
 import { TransformControls } from 'three';
+import { ResizeTool } from './resize-tool.js';
 import { bus } from '../core/events.js';
 import { editor } from '../core/scene.js';
 import { project } from '../core/project.js';
@@ -303,6 +304,8 @@ export class Viewport {
     this.scene.add(this.tcHelper);
     this.tc.addEventListener('dragging-changed', (e) => { this.dragging = e.value; if (!e.value) bus.emit('gizmo-drag-end'); });
     this.tc.addEventListener('objectChange', () => this.onGizmoChange());
+    this.resizeTool = new ResizeTool(this);
+    this.scene.add(this.resizeTool.group);
     this.showGrid = true; this.showGizmos = true; this.gameGizmos = false;
     this.needsRender = true;
 
@@ -348,7 +351,8 @@ export class Viewport {
   gameSize() { return [this.mode === 'game' ? this.width : Math.max(1, this.gameHost.clientWidth || this.width), this.mode === 'game' ? this.height : Math.max(1, this.gameHost.clientHeight || this.height)]; }
   setTool(t) {
     this.tool = t;
-    if (t === 'view') this.tc.detach();
+    this.resizeTool.setActive(t === 'resize');
+    if (t === 'view' || t === 'resize') this.tc.detach();
     else { this.tc.setMode(t); this.attachGizmo(); }
     this.needsRender = true;
   }
@@ -504,7 +508,7 @@ export class Viewport {
   }
 
   attachGizmo() {
-    if (editor.playing || this.tool === 'view') { this.tc.detach(); return; }
+    if (editor.playing || this.tool === 'view' || this.tool === 'resize') { this.tc.detach(); return; }
     const id = editor.selected;
     const n = id != null ? this.nodes.get(id) : null;
     if (n && n.group.parent) { if (this.tc.object !== n.group) this.tc.attach(n.group); }
@@ -720,7 +724,7 @@ export class Viewport {
     let cam = this.sceneCam;
     this.grid.visible = isScene && this.showGrid;
     this.helpers.visible = isScene || this.gameGizmos;
-    this.tcHelper.visible = isScene && !editor.playing;
+    this.tcHelper.visible = isScene && !editor.playing && !!this.tc.object;
     this.debugLines.visible = this.debugLines.visible && (isScene || this.gameGizmos);
     this.sky.visible = true;
     this.scene.background = null;
@@ -736,6 +740,7 @@ export class Viewport {
     }
     this.sky.position.copy(cam.position.setFromMatrixPosition(cam.matrixWorld));
     if (editor.playing) this.rt.buildExtras(cam);
+    if (isScene) this.resizeTool.update(cam); else this.resizeTool.group.visible = false;
     this.renderer.render(this.scene, cam);
     if (isScene) this.drawAxisGizmo();
   }

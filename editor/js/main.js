@@ -432,6 +432,7 @@ function initShortcuts() {
     else if (e.code === 'KeyW') { if (!viewport.controller.arrowsEnabled()) setTool('translate'); }
     else if (e.code === 'KeyE') setTool('rotate');
     else if (e.code === 'KeyR') setTool('scale');
+    else if (e.code === 'KeyT') setTool('resize');
     else if (e.code === 'KeyX') document.getElementById('btn-space').click();
     else if (e.code === 'F2' && editor.selected != null && !inProject) startRename(editor.selected);
   });
