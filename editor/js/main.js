@@ -374,6 +374,7 @@ function initPanels() {
 
 // ---------------- shortcuts ----------------
 function initShortcuts() {
+  viewport.controller.onTapW = () => setTool('translate');
   window.addEventListener('keydown', (e) => {
     const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName) || document.activeElement?.closest?.('.cm-editor');
     const mod = e.ctrlKey || e.metaKey;
@@ -395,7 +396,8 @@ function initShortcuts() {
     if (e.code === 'Delete' && editor.selection.length && !editor.playing && !inProject) { editor.remove(editor.selection); e.preventDefault(); }
     else if (e.code === 'KeyF' && !inProject) { viewport.frameSelected(); }
     else if (e.code === 'KeyQ') setTool('view');
-    else if (e.code === 'KeyW') setTool('translate');
+    // in the Scene view a held W moves the camera; a quick tap still picks the Move tool (see viewport.js)
+    else if (e.code === 'KeyW') { if (!viewport.controller.arrowsEnabled()) setTool('translate'); }
     else if (e.code === 'KeyE') setTool('rotate');
     else if (e.code === 'KeyR') setTool('scale');
     else if (e.code === 'KeyX') document.getElementById('btn-space').click();

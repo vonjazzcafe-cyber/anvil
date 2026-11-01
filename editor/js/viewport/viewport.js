@@ -88,7 +88,10 @@ function makeGrid() {
   return group;
 }
 
-const ARROWS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
+// Scene camera keys without right-click: W/S forward and back along the ground, A/D and ←/→ sideways,
+// ↑/↓ straight up and down. (Right-click + WASD still flies in the direction you look.)
+const ARROWS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'KeyW', 'KeyA', 'KeyS', 'KeyD']);
+const W_TAP_MS = 160; // a quick tap of W still picks the Move tool (Unity's shortcut); holding it moves
 // ---------- scene camera controller (Unity controls) ----------
 class SceneCamera {
   constructor(camera, dom) {
@@ -97,7 +100,7 @@ class SceneCamera {
     this.yaw = Math.PI * 0.25 + Math.PI; this.pitch = -0.38; this.distance = 12;
     this.flySpeed = 6; try { const v = parseFloat(localStorage.getItem('anvil-fly-speed')); if (v > 0) this.flySpeed = v; } catch { }
     this.keys = new Set(); this.mode = null; this.last = null;
-    this.arrows = new Set(); this.arrowShift = false;
+    this.arrows = new Set(); this.arrowShift = false; this.keyDownAt = {};
     this.ortho2D = false;
     this.update();
     dom.addEventListener('contextmenu', e => e.preventDefault());
@@ -111,16 +114,17 @@ class SceneCamera {
         if (e.code === 'ArrowUp' || e.code === 'ArrowDown') { this.changeSpeed(e.code === 'ArrowUp' ? 1.25 : 1 / 1.25); e.preventDefault(); return; }
         this.keys.add(e.code); e.preventDefault(); return;
       }
-      // arrow keys move the Scene camera without right-click, relative to where it looks (like Unity):
-      // Up/Down forward and back along the ground, Left/Right sideways; hold Shift to go faster
       if (ARROWS.has(e.code) && !e.ctrlKey && !e.metaKey && !e.altKey && this.arrowsEnabled()) {
         e.preventDefault();
+        if (e.repeat && this.arrows.has(e.code)) return;
         if (!this.arrows.size) this.startArrowLoop();
         this.arrows.add(e.code);
+        this.keyDownAt[e.code] = performance.now();
       }
       if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') this.arrowShift = true;
     });
     window.addEventListener('keyup', e => {
+      if (e.code === 'KeyW' && this.arrows.has('KeyW') && performance.now() - (this.keyDownAt.KeyW || 0) < W_TAP_MS) this.onTapW?.();
       this.keys.delete(e.code); this.arrows.delete(e.code);
       if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') this.arrowShift = false;
     });
@@ -149,9 +153,11 @@ class SceneCamera {
       if (f.lengthSq() < 1e-6) f.set(Math.sin(this.yaw), 0, Math.cos(this.yaw)); // looking straight down/up
       f.normalize();
       const right = new THREE.Vector3().crossVectors(f, new THREE.Vector3(0, 1, 0)).normalize();
-      const v = new THREE.Vector3();
-      if (this.arrows.has('ArrowUp')) v.add(f); if (this.arrows.has('ArrowDown')) v.sub(f);
-      if (this.arrows.has('ArrowRight')) v.add(right); if (this.arrows.has('ArrowLeft')) v.sub(right);
+      const v = new THREE.Vector3(), A = this.arrows;
+      const wHeld = A.has('KeyW') && t - (this.keyDownAt.KeyW || 0) >= W_TAP_MS;
+      if (wHeld) v.add(f); if (A.has('KeyS')) v.sub(f);
+      if (A.has('KeyD') || A.has('ArrowRight')) v.add(right); if (A.has('KeyA') || A.has('ArrowLeft')) v.sub(right);
+      if (A.has('ArrowUp')) v.y += 1; if (A.has('ArrowDown')) v.y -= 1;
       if (v.lengthSq() > 0) {
         // the same speed as flying (right-click + wheel or ↑/↓ sets it); it builds up the longer you hold the key
         const base = this.flySpeed * (this.arrowShift ? 4 : 1) * Math.min(3, 1 + (t - start) / 1000 * 0.5);
