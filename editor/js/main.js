@@ -76,9 +76,37 @@ async function boot() {
   window.anvil = { project, editor, viewport, engine, bus, compileNow, play: () => play(compileBeforePlay), stop, setPaused, stepOnce, scriptMeta, addScriptOrComponent, openScript, showCenter, showBottom, getEntries, rectSize, createUI };
 }
 
+// open tabs, their order, the active one and each script's cursor survive a page reload (per project, this browser)
+let tabsReady = false, pendingCursors = {};
+const tabsKey = () => 'anvil-tabs:' + project.name;
+function saveTabs() {
+  if (!tabsReady) return;
+  try {
+    const old = JSON.parse(localStorage.getItem(tabsKey()) || '{}');
+    const cursors = {};
+    for (const p of openTabs) cursors[p] = code.cursorOf(p) || pendingCursors[p] || old.cursors?.[p] || null;
+    localStorage.setItem(tabsKey(), JSON.stringify({ open: openTabs, order: centerOrder, active: centerTab, cursors }));
+  } catch { }
+}
+function restoreTabs() {
+  let s = null; try { s = JSON.parse(localStorage.getItem(tabsKey()) || 'null'); } catch { }
+  if (s) {
+    for (const p of s.open || []) if (project.file(p) && !openTabs.includes(p)) openTabs.push(p);
+    if (Array.isArray(s.order)) centerOrder = s.order.filter(id => id === 'scene' || id === 'game' || openTabs.includes(id));
+    pendingCursors = Object.assign({}, s.cursors || {});
+    const active = s.active === 'game' || openTabs.includes(s.active) ? s.active : 'scene';
+    showCenter(active);
+  }
+  tabsReady = true; renderCenterTabs();
+}
+window.addEventListener('beforeunload', saveTabs);
+
 function onProjectLoaded() {
+  tabsReady = false;
   editor.selection = []; editor.clearUndo();
   for (const t of [...openTabs]) closeTab(t, true);
+  centerOrder = ['scene', 'game'];
+  setTimeout(restoreTabs, 0);
   document.getElementById('project-name').textContent = project.name;
   viewport?.syncFromScene();
   bus.emit('scene-changed', { label: 'load' });
@@ -183,6 +211,7 @@ function renderCenterTabs() {
   }
   // keep the active tab in view when the bar is scrolled
   bar.querySelector('.tab.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  saveTabs();
   if (!bar.dataset.wheel) {
     bar.dataset.wheel = '1';
     bar.addEventListener('wheel', (e) => { if (bar.scrollWidth > bar.clientWidth && Math.abs(e.deltaY) > Math.abs(e.deltaX)) { bar.scrollLeft += e.deltaY; e.preventDefault(); } }, { passive: false });
@@ -244,7 +273,10 @@ function showCenter(id) {
     bus.emit('center-view', id);
     // like Unity: coming back from the code editor recompiles
     if (prev !== 'scene' && prev !== 'game') { code.saveAll(); if (scriptsDirty) compileSoon(); }
-  } else code.openFile(id);
+  } else {
+    code.openFile(id);
+    if (pendingCursors[id]) { code.restoreCursor(id, pendingCursors[id]); delete pendingCursors[id]; }
+  }
   renderCenterTabs();
 }
 function openScript(path, line, col) {

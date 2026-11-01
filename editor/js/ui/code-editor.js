@@ -166,6 +166,18 @@ export function openFile(path, line, col) {
   return true;
 }
 
+// where the cursor and scroll are in an open script (kept across page reloads)
+export function cursorOf(path) {
+  const d = docs.get(path); if (!d) return null;
+  const pos = d.view.state.selection.main.head, l = d.view.state.doc.lineAt(pos);
+  return { line: l.number, col: pos - l.from + 1, top: d.view.scrollDOM.scrollTop };
+}
+export function restoreCursor(path, c) {
+  const d = docs.get(path); if (!d || !c) return;
+  const doc = d.view.state.doc, l = doc.line(Math.max(1, Math.min(c.line || 1, doc.lines)));
+  d.view.dispatch({ selection: { anchor: Math.min(l.from + Math.max(0, (c.col || 1) - 1), l.to) } });
+  requestAnimationFrame(() => { d.view.scrollDOM.scrollTop = c.top || 0; });
+}
 export function goTo(path, line, col = 1) {
   const d = docs.get(path); if (!d) return;
   const doc = d.view.state.doc;
@@ -190,8 +202,14 @@ export function renamedFile(from, to) { const d = docs.get(from); if (d) { d.vie
 export function reloadFromProject(path) {
   const d = docs.get(path); const f = project.file(path);
   if (!d || !f) return;
-  const cur = d.view.state.doc.toString();
-  if (cur !== f.text) d.view.dispatch({ changes: { from: 0, to: cur.length, insert: f.text || '' } });
+  const cur = d.view.state.doc.toString(), next = f.text || '';
+  if (cur === next) return;
+  // replace only the part that changed, so the cursor, selection and scroll stay where they were
+  let a = 0; const max = Math.min(cur.length, next.length);
+  while (a < max && cur.charCodeAt(a) === next.charCodeAt(a)) a++;
+  let b = 0;
+  while (b < max - a && cur.charCodeAt(cur.length - 1 - b) === next.charCodeAt(next.length - 1 - b)) b++;
+  d.view.dispatch({ changes: { from: a, to: cur.length - b, insert: next.slice(a, next.length - b) } });
 }
 export function relint() { for (const d of docs.values()) try { forceLinting(d.view); } catch (e) { } }
 export function isOpen(path) { return docs.has(path); }

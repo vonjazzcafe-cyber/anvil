@@ -172,6 +172,8 @@ function stopPolling() { clearInterval(pollTimer); if (stopPolling.fn) window.re
 
 // scripts and text files changed, added or deleted outside Anvil
 async function pullExternalChanges() {
+  // never look while Anvil is writing: half-way through a save the folder shows Anvil's own write as a change
+  if (saving || pendingSave) return;
   const handles = await scan();
   let changed = 0;
   for (const [path, h] of Object.entries(handles)) {
@@ -181,6 +183,9 @@ async function pullExternalChanges() {
     if (mtimes.get(path) === file.lastModified) continue;
     mtimes.set(path, file.lastModified);
     const text = await file.text();
+    // the same text Anvil last wrote: it's our own save, not an edit made outside
+    if (written.get(path) === sigOf(text)) continue;
+    if (saving || pendingSave) { mtimes.delete(path); return; }  // a save started meanwhile: look again next time
     written.set(path, sigOf(text));
     const cur = project.file(path);
     if (cur && cur.text === text) continue;
