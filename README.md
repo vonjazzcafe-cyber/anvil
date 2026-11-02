@@ -27,7 +27,7 @@ By default a project lives inside the browser. To work on real files instead (Ch
 
 1. **File › Open Project Folder on This Computer…** and pick a folder. An empty folder gets the current project; a folder that already has an Anvil project in it opens that project.
 2. From then on every change is saved into that folder within a second, as a normal folder tree: `Assets/Scripts/...cs`, your images, sounds and 3D models as their real files, and `Assets/Anvil/project.anvil.json` for scenes, prefabs, materials and settings. The badge next to the project name shows the folder.
-3. You can edit the scripts with any other editor (VS Code, Notepad…). When you come back to Anvil it picks the changes up. New scripts you add to the folder appear too.
+3. You can edit the scripts with any other editor (VS Code, Notepad…), and other tools (or an AI assistant) can change scenes, prefabs and settings in `project.anvil.json`. Anvil picks the changes up within a few seconds while it's open, and opens a scene that was set as `openScene` from outside. New scripts you add to the folder appear too.
 4. Next time, Anvil asks once for permission to the folder (click the 📁 badge or **File › Reconnect Project Folder**).
 
 Put that folder in OneDrive, Google Drive or a GitHub repository and it follows you to every computer: open the same folder there with **Open Project Folder**.

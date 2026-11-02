@@ -14,6 +14,7 @@ let linkedProject = null;   // project name it belongs to
 const written = new Map();  // path -> signature of what we last wrote / read
 const mtimes = new Map();   // path -> lastModified of text files on disk
 let saving = null, pendingSave = false, pollTimer = 0;
+let lastData = null;        // the project.anvil.json text Anvil last wrote or read (to tell outside edits apart)
 
 export const folderSupported = () => typeof window.showDirectoryPicker === 'function';
 export const linkedFolderName = () => (root && linkedProject === project.name ? root.name : null);
@@ -82,6 +83,7 @@ async function saveToFolder() {
         if (written.get(path) === sig) continue;
         await writeFile(path, typeof v === 'string' ? v : dataURLToBytes(v.url));
         written.set(path, sig);
+        if (path === DATA_PATH) lastData = v;
       }
       // files Anvil wrote before that are no longer in the project
       for (const path of [...written.keys()]) if (!(path in files)) { await deleteFile(path); written.delete(path); }
@@ -120,7 +122,7 @@ async function readFromFolder(fallbackName) {
   for (const [path, h] of Object.entries(handles)) {
     const kind = kindOf(path);
     const file = await h.getFile();
-    if (path === DATA_PATH || TEXT_KINDS.has(kind)) { texts[path] = await file.text(); mtimes.set(path, file.lastModified); written.set(path, sigOf(texts[path])); }
+    if (path === DATA_PATH || TEXT_KINDS.has(kind)) { texts[path] = await file.text(); mtimes.set(path, file.lastModified); written.set(path, sigOf(texts[path])); if (path === DATA_PATH) lastData = texts[path]; }
     else if (BINARY_KINDS.has(kind)) binaries[path] = file;
   }
   const p = filesToProject(texts, fallbackName);
@@ -200,7 +202,52 @@ async function pullExternalChanges() {
     written.delete(path); mtimes.delete(path);
     project.remove(path); changed++;
   }
+  // scenes, prefabs, materials and settings changed outside Anvil (in Assets/Anvil/project.anvil.json)
+  const dh = handles[DATA_PATH];
+  if (dh) {
+    const file = await dh.getFile();
+    if (mtimes.get(DATA_PATH) !== file.lastModified) {
+      const text = await file.text();
+      if (written.get(DATA_PATH) === sigOf(text)) mtimes.set(DATA_PATH, file.lastModified);
+      else {
+        const { editor } = await import('./scene.js');
+        if (saving || pendingSave || editor.playing) return;   // look again after the save / after Play stops
+        mtimes.set(DATA_PATH, file.lastModified);
+        const n = applyExternalData(text);
+        written.set(DATA_PATH, sigOf(text)); lastData = text;
+        changed += n;
+        if (n) saveToFolder();
+      }
+    }
+  }
   if (changed) { toast(`Picked up ${changed} change${changed > 1 ? 's' : ''} from the folder`); bus.emit('project-changed', 'files'); }
+}
+
+// only what changed in the file since Anvil last wrote it is applied, so newer edits made in Anvil are kept
+function applyExternalData(text) {
+  let next, prev;
+  try { next = JSON.parse(text); } catch { toast('project.anvil.json was changed outside Anvil but isn\'t valid JSON yet. Waiting for a complete file.', 'error'); return 0; }
+  try { prev = lastData ? JSON.parse(lastData) : null; } catch { prev = null; }
+  prev = prev || { files: {}, settings: {} };
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  const skip = (f) => !f || !f.kind || TEXT_KINDS.has(f.kind) || BINARY_KINDS.has(f.kind);
+  let n = 0, openTouched = false;
+  for (const [path, f] of Object.entries(next.files || {})) {
+    if (skip(f) || path.startsWith('Assets/Anvil/')) continue;
+    if (same(prev.files?.[path], f)) continue;
+    project.writeData(path, f.data); n++;
+    if (path === project.data.openScene) openTouched = true;
+  }
+  for (const [path, f] of Object.entries(prev.files || {})) {
+    if (skip(f) || (next.files && path in next.files) || !project.file(path)) continue;
+    project.remove(path); n++;
+  }
+  if (next.settings && !same(prev.settings, next.settings)) { Object.assign(project.data.settings, next.settings); project.touch('settings'); bus.emit('settings-changed'); n++; }
+  for (const f of next.folders || []) project.ensureFolder(f);
+  // a scene opened from outside (another tool or an assistant set "openScene") opens here too
+  if (next.openScene && next.openScene !== prev.openScene && project.file(next.openScene)) bus.emit('open-scene', next.openScene);
+  else if (openTouched) { bus.emit('scene-opened'); bus.emit('scene-changed', { label: 'folder' }); bus.emit('selection-changed'); }
+  return n;
 }
 
 async function link(handle, { load }) {
