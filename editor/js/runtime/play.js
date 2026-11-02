@@ -26,7 +26,7 @@ export function initPlay(vp) {
   const hint = document.getElementById('game-hint');
   // focus handling: clicking the Game view gives it the keyboard
   document.addEventListener('pointerdown', (e) => {
-    const inGame = canvasHost.contains(e.target) && viewport.mode === 'game';
+    const inGame = canvasHost.contains(e.target) && viewport.showsGame;
     if (inGame !== gameFocused) { gameFocused = inGame; if (!gameFocused) releaseAll(); }
     hint.classList.toggle('hidden', !editor.playing || gameFocused);
   }, true);
@@ -45,7 +45,7 @@ export function initPlay(vp) {
     if (gameFocused) { e.preventDefault(); e.stopPropagation(); }
   }, true);
   window.addEventListener('blur', releaseAll);
-  const canvasEl = () => viewport.canvas;
+  const canvasEl = () => viewport.gameCanvas;
   canvasHost.addEventListener('pointermove', (e) => {
     if (!editor.playing) return;
     if (pointerLocked) { mouse[0] += e.movementX; mouse[1] -= e.movementY; return; }
@@ -216,17 +216,17 @@ function applyEvents(r) {
   if (ev.hier) { editor.runtime = ev.hier; bus.emit('runtime-hierarchy'); }
   const overlay = document.getElementById('gui-overlay');
   if (ev.gui) {
-    const c = viewport.canvas, host = document.getElementById('game-host');
+    const c = viewport.gameCanvas, host = document.getElementById('game-host');
     const cr = c.getBoundingClientRect(), hr = host.getBoundingClientRect();
-    drawGui(overlay, viewport.mode === 'game' ? ev.gui : null, 1, 1, cr.left - hr.left, cr.top - hr.top);
+    drawGui(overlay, viewport.showsGame ? ev.gui : null, 1, 1, cr.left - hr.left, cr.top - hr.top);
   } else clearGui();
   viewport.setDebugLines(ev.lines || null);
   if (ev.prefs) { project.data.playerPrefs = ev.prefs; project.touch('prefs'); }
   if (ev.url) window.open(ev.url, '_blank', 'noopener');
   wantLock = ev.cursorLock === 1;
   if (!wantLock && pointerLocked) document.exitPointerLock?.();
-  if (wantLock && gameFocused && !pointerLocked) viewport.canvas.requestPointerLock?.();
-  viewport.canvas.style.cursor = ev.cursorVisible === false && gameFocused ? 'none' : '';
+  if (wantLock && gameFocused && !pointerLocked) viewport.gameCanvas.requestPointerLock?.();
+  viewport.gameCanvas.style.cursor = ev.cursorVisible === false && gameFocused ? 'none' : '';
   if (ev.pause) setPaused(true);
   if (ev.quit) { log(3, 'Application.Quit() called — play mode stopped (in a build the game would close).'); stop(); }
   bus.lastTime = ev.time;
@@ -272,7 +272,7 @@ export function stop(fromError = false) {
   document.getElementById('app').classList.remove('playing');
   document.getElementById('game-hint').classList.add('hidden');
   clearGui();
-  viewport.canvas.style.cursor = '';
+  viewport.gameCanvas.style.cursor = '';
   viewport.exitPlay();
   editor.selection = editor.selection.filter(id => editor.get(id));
   bus.emit('play-state', { playing: false });

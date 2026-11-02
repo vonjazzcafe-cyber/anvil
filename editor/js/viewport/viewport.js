@@ -321,7 +321,33 @@ export class Viewport {
     this.loop();
   }
 
+  // Scene and Game side by side (like docking Unity's Game tab next to the Scene tab): the Scene view keeps
+  // the main canvas, the Game view gets a second renderer drawing the same scene from the game camera
+  get showsGame() { return this.mode === 'game' || this.split; }
+  get gameCanvas() { return this.split && this.gameRenderer ? this.gameRenderer.domElement : this.canvas; }
+  setSplit(on) {
+    on = !!on;
+    if (on === !!this.split) return;
+    this.split = on;
+    if (on) {
+      if (!this.gameRenderer) {
+        const quality = project.data?.editor?.quality || 'high';
+        const r = this.gameRenderer = new THREE.WebGLRenderer({ antialias: quality !== 'low', powerPreference: 'high-performance' });
+        r.setPixelRatio(this.renderer.getPixelRatio());
+        r.outputColorSpace = THREE.SRGBColorSpace; r.toneMapping = THREE.NoToneMapping;
+        r.shadowMap.enabled = this.renderer.shadowMap.enabled; r.shadowMap.type = THREE.PCFSoftShadowMap;
+        r.domElement.tabIndex = 0;
+      }
+      this.gameHost.prepend(this.gameRenderer.domElement);
+      this.mode = 'scene';
+      if (this.canvas.parentElement !== this.sceneHost) this.sceneHost.prepend(this.canvas);
+      this.axisGizmo.style.display = '';
+    } else if (this.gameRenderer) this.gameRenderer.domElement.remove();
+    this.resize();
+    this.needsRender = true;
+  }
   setMode(mode) {
+    if (this.split) { this.mode = 'scene'; this.resize(); this.needsRender = true; return; }
     this.mode = mode;
     const host = mode === 'game' ? this.gameHost : this.sceneHost;
     if (this.canvas.parentElement !== host) host.prepend(this.canvas);
@@ -329,26 +355,38 @@ export class Viewport {
     this.resize();
     this.needsRender = true;
   }
-  resize() {
-    const host = this.mode === 'game' ? this.gameHost : this.sceneHost;
+  // size a canvas to its host (the Game view keeps the chosen aspect ratio, letterboxed)
+  fit(renderer, host, game) {
+    const canvas = renderer.domElement;
     const w = Math.max(1, host.clientWidth), h = Math.max(1, host.clientHeight);
     let cw = w, ch = h;
-    if (this.mode === 'game' && this.aspect && this.aspect !== 'free') {
+    if (game && this.aspect && this.aspect !== 'free') {
       const [aw, ah] = this.aspect.split(':').map(Number);
       const a = aw / ah;
       if (w / h > a) { cw = Math.round(h * a); } else { ch = Math.round(w / a); }
-      this.canvas.style.position = 'absolute';
-      this.canvas.style.left = ((w - cw) / 2) + 'px'; this.canvas.style.top = ((h - ch) / 2) + 'px';
-      this.canvas.style.width = cw + 'px'; this.canvas.style.height = ch + 'px';
-    } else { this.canvas.style.position = ''; this.canvas.style.width = ''; this.canvas.style.height = ''; this.canvas.style.left = ''; this.canvas.style.top = ''; }
-    this.renderer.setSize(cw, ch, false);
+      canvas.style.position = 'absolute';
+      canvas.style.left = ((w - cw) / 2) + 'px'; canvas.style.top = ((h - ch) / 2) + 'px';
+      canvas.style.width = cw + 'px'; canvas.style.height = ch + 'px';
+    } else { canvas.style.position = ''; canvas.style.width = ''; canvas.style.height = ''; canvas.style.left = ''; canvas.style.top = ''; }
+    renderer.setSize(cw, ch, false);
+    return [cw, ch];
+  }
+  resize() {
+    const host = this.mode === 'game' ? this.gameHost : this.sceneHost;
+    const [cw, ch] = this.fit(this.renderer, host, this.mode === 'game');
     this.width = cw; this.height = ch;
     this.sceneCam.aspect = cw / ch; this.sceneCam.updateProjectionMatrix();
-    this.gameCam.aspect = cw / ch; this.gameCam.updateProjectionMatrix();
+    let gw = cw, gh = ch;
+    if (this.split && this.gameRenderer) [gw, gh] = this.fit(this.gameRenderer, this.gameHost, true);
+    this.gw = gw; this.gh = gh;
+    this.gameCam.aspect = gw / gh; this.gameCam.updateProjectionMatrix();
     this.needsRender = true;
-    bus.emit('viewport-resized', { w: cw, h: ch, mode: this.mode });
+    bus.emit('viewport-resized', { w: gw, h: gh, mode: this.split ? 'game' : this.mode });
   }
-  gameSize() { return [this.mode === 'game' ? this.width : Math.max(1, this.gameHost.clientWidth || this.width), this.mode === 'game' ? this.height : Math.max(1, this.gameHost.clientHeight || this.height)]; }
+  gameSize() {
+    if (this.split) return [this.gw || 1, this.gh || 1];
+    return [this.mode === 'game' ? this.width : Math.max(1, this.gameHost.clientWidth || this.width), this.mode === 'game' ? this.height : Math.max(1, this.gameHost.clientHeight || this.height)];
+  }
   setTool(t) {
     this.tool = t;
     this.resizeTool.setActive(t === 'resize');
@@ -687,7 +725,7 @@ export class Viewport {
       const ortho = data[o + 5] !== 0;
       cam = ortho ? this.gameOrtho : this.gameCam;
       const m = unityMatrixToThree(data, o + 12, new THREE.Matrix4());
-      if (ortho) { const s = data[o + 6], a = this.width / this.height; Object.assign(this.gameOrtho, { left: -s * a, right: s * a, top: s, bottom: -s }); }
+      if (ortho) { const s = data[o + 6], a = (this.gw || this.width) / (this.gh || this.height); Object.assign(this.gameOrtho, { left: -s * a, right: s * a, top: s, bottom: -s }); }
       else cam.fov = data[o + 2];
       cam.near = data[o + 3]; cam.far = data[o + 4]; cam.updateProjectionMatrix();
       cam.matrixAutoUpdate = false; cam.matrixWorld.copy(m); cam.matrixWorldInverse.copy(m).invert();
@@ -709,7 +747,7 @@ export class Viewport {
         const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
         n.group.matrixWorld.decompose(p, q, s);
         const m = new THREE.Matrix4().compose(p, q, new THREE.Vector3(1, 1, 1));
-        if (c.orthographic) { const sz = c.orthographicSize ?? 5, a = this.width / this.height; Object.assign(this.gameOrtho, { left: -sz * a, right: sz * a, top: sz, bottom: -sz }); }
+        if (c.orthographic) { const sz = c.orthographicSize ?? 5, a = (this.gw || this.width) / (this.gh || this.height); Object.assign(this.gameOrtho, { left: -sz * a, right: sz * a, top: sz, bottom: -sz }); }
         else cam.fov = c.fieldOfView ?? 60;
         cam.near = c.nearClipPlane ?? 0.3; cam.far = c.farClipPlane ?? 1000; cam.updateProjectionMatrix();
         cam.matrixAutoUpdate = false; cam.matrixWorld.copy(m); cam.matrixWorldInverse.copy(m).invert();
@@ -720,7 +758,16 @@ export class Viewport {
   }
   render() {
     this.refreshHelperTransforms();
-    const isScene = this.mode === 'scene';
+    if (this.split && this.gameRenderer) {
+      const dbg = this.debugLines.visible;
+      this.renderView(false, this.gameRenderer);
+      this.debugLines.visible = dbg;
+      this.renderView(true, this.renderer);
+      return;
+    }
+    this.renderView(this.mode === 'scene', this.renderer);
+  }
+  renderView(isScene, renderer) {
     let cam = this.sceneCam;
     this.grid.visible = isScene && this.showGrid;
     this.helpers.visible = isScene || this.gameGizmos;
@@ -731,8 +778,8 @@ export class Viewport {
     if (!isScene) {
       const g = this.configureGameCamera();
       if (!g.cam) {
-        this.renderer.setClearColor(0x000000, 1); this.renderer.clear();
-        this.drawNoCamera();
+        renderer.setClearColor(0x000000, 1); renderer.clear();
+        this.drawNoCamera(); this.noCamEl.style.display = '';
         return;
       }
       cam = g.cam;
@@ -741,7 +788,7 @@ export class Viewport {
     this.sky.position.copy(cam.position.setFromMatrixPosition(cam.matrixWorld));
     if (editor.playing) this.rt.buildExtras(cam);
     if (isScene) this.resizeTool.update(cam); else this.resizeTool.group.visible = false;
-    this.renderer.render(this.scene, cam);
+    renderer.render(this.scene, cam);
     if (isScene) this.drawAxisGizmo();
   }
   drawNoCamera() {

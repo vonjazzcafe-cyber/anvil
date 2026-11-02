@@ -34,6 +34,8 @@ Put that folder in OneDrive, Google Drive or a GitHub repository and it follows 
 
 While a folder is linked, Anvil also keeps the Console in `Logs/anvil-console.txt` (errors with file and line, warnings, `Debug.Log` output and stack traces, newest last). Other tools, or an AI assistant that can see the folder, can read what went wrong without screenshots.
 
+**Scene and Game side by side:** drag the Game (or Scene) tab down into the view area and drop it on the left or right half, like docking in Unity. Drag the line between them to resize; double-click it, or right-click a tab › Back to One View, to go back.
+
 **Home:** click **🏠 Home** (top right), the Anvil logo, or **File › Home** to see every project in this browser with its scenes and the folder it saves to. Click a scene to jump straight into it; a project that saves to a folder asks for the folder again if the browser needs permission. Esc goes back.
 
 **Panels:** drag a divider all the way to the edge to close the Hierarchy, Inspector or Project/Console panel; drag the thin strip it leaves back out (or double-click it) to reopen. The buttons at the top right and Alt+1/2/3 do the same.

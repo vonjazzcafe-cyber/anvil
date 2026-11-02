@@ -27,6 +27,8 @@ let viewport;
 const openTabs = [];          // open script paths (center tabs)
 let centerOrder = ['scene', 'game']; // the order the center tabs are shown in (they can be dragged around)
 let centerTab = 'scene';
+// Scene and Game side by side: which one is on the left and how wide it is (fraction of the center panel)
+let split = { on: false, left: 'scene', ratio: 0.5 };
 let scriptsDirty = true;
 let lastCompileOk = false;
 
@@ -76,6 +78,7 @@ async function boot() {
   bus.on('input-handling-changed', () => { engine.ready && engine.setInputHandling(project.settings.inputHandling); scriptsDirty = true; compileSoon(); });
   onProjectLoaded();
   viewport.setMode('scene');
+  initSplitDivider();
   engine.load();
   initOffline();
   document.getElementById('boot')?.remove();
@@ -91,7 +94,7 @@ function saveTabs() {
     const old = JSON.parse(localStorage.getItem(tabsKey()) || '{}');
     const cursors = {};
     for (const p of openTabs) cursors[p] = code.cursorOf(p) || pendingCursors[p] || old.cursors?.[p] || null;
-    localStorage.setItem(tabsKey(), JSON.stringify({ open: openTabs, order: centerOrder, active: centerTab, cursors }));
+    localStorage.setItem(tabsKey(), JSON.stringify({ open: openTabs, order: centerOrder, active: centerTab, cursors, split }));
   } catch { }
 }
 function restoreTabs() {
@@ -100,8 +103,10 @@ function restoreTabs() {
     for (const p of s.open || []) if (project.file(p) && !openTabs.includes(p)) openTabs.push(p);
     if (Array.isArray(s.order)) centerOrder = s.order.filter(id => id === 'scene' || id === 'game' || openTabs.includes(id));
     pendingCursors = Object.assign({}, s.cursors || {});
+    if (s.split && typeof s.split === 'object') split = { on: !!s.split.on, left: s.split.left === 'game' ? 'game' : 'scene', ratio: Math.min(0.85, Math.max(0.15, +s.split.ratio || 0.5)) };
     const active = s.active === 'game' || openTabs.includes(s.active) ? s.active : 'scene';
     showCenter(active);
+    if (split.on) applySplit();
   }
   tabsReady = true; renderCenterTabs();
 }
@@ -202,7 +207,13 @@ function renderCenterTabs() {
   for (const id of ['scene', 'game', ...openTabs]) if (!centerOrder.includes(id)) centerOrder.push(id);
   const tab = (id, label, closable) => {
     const dirty = closable && code.anyDirty && isDirty(id);
-    const t = el('div', { class: 'tab' + (centerTab === id ? ' active' : '') + (dirty ? ' dirty' : '') }, el('span', { class: 'tname', text: label }));
+    const isView = id === 'scene' || id === 'game';
+    const on = centerTab === id || (split.on && isView && (centerTab === 'scene' || centerTab === 'game'));
+    const t = el('div', { class: 'tab' + (on ? ' active' : '') + (dirty ? ' dirty' : '') }, el('span', { class: 'tname', text: label }));
+    if (isView) t.addEventListener('contextmenu', (e) => { e.preventDefault(); showMenu([
+      split.on ? { label: 'Back to One View', action: () => setSplit(false, id) } : { label: 'Scene and Game Side by Side', action: () => setSplit(true, id === 'game' ? 'game' : 'scene', 'right') },
+      split.on ? { label: 'Swap Sides', action: () => { split.left = split.left === 'scene' ? 'game' : 'scene'; applySplit(); } } : null,
+    ], e.clientX, e.clientY); });
     t.dataset.id = id;
     if (closable) { const x = el('span', { class: 'close', text: '✕', title: 'Close' }); x.addEventListener('click', (e) => { e.stopPropagation(); closeTab(id); }); t.append(x); }
     t.addEventListener('click', () => { if (t.dataset.dragged) { delete t.dataset.dragged; return; } showCenter(id); });
@@ -228,6 +239,16 @@ function startTabDrag(e, t, bar) {
   if (e.button !== 0 || e.target.closest('.close')) return;
   const startX = e.clientX; let dragging = false, dropAt = -1, scrollTimer = 0, lastX = startX;
   const marker = el('div', { class: 'tab-drop-marker' });
+  const isView = t.dataset.id === 'scene' || t.dataset.id === 'game';
+  const body = document.getElementById('center-body');
+  let side = null; const zone = el('div', { class: 'split-drop' }, el('div'));
+  // a Scene/Game tab dragged down into the view area docks it on the left or right half
+  const sideAt = (ev) => {
+    if (!isView) return null;
+    const br = body.getBoundingClientRect(), tb = bar.getBoundingClientRect();
+    if (ev.clientY < tb.bottom + 24 || ev.clientY > br.bottom || ev.clientX < br.left || ev.clientX > br.right) return null;
+    return ev.clientX < br.left + br.width / 2 ? 'left' : 'right';
+  };
   const others = () => [...bar.querySelectorAll('.tab')].filter(x => x !== t);
   const place = (x) => {
     const list = others(); let i = list.length;
@@ -249,15 +270,19 @@ function startTabDrag(e, t, bar) {
         place(lastX);
       }, 30);
     }
+    side = sideAt(ev);
+    if (side) { if (!zone.parentElement) body.append(zone); zone.className = 'split-drop ' + side; marker.style.display = 'none'; }
+    else { zone.remove(); marker.style.display = ''; }
     t.style.transform = `translateX(${ev.clientX - startX}px)`;
     place(ev.clientX);
   };
   const up = () => {
     window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); window.removeEventListener('pointercancel', up);
-    clearInterval(scrollTimer); marker.remove();
+    clearInterval(scrollTimer); marker.remove(); zone.remove();
     if (!dragging) return;
     t.dataset.dragged = '1'; t.classList.remove('dragging'); t.style.transform = '';
     const id = t.dataset.id;
+    if (side) { setSplit(true, id, side); return; }
     const rest = others().map(x => x.dataset.id);
     rest.splice(Math.max(0, Math.min(rest.length, dropAt)), 0, id);
     centerOrder = rest;
@@ -271,9 +296,11 @@ function isDirty(p) { return dirtyMap.has(p); }
 function showCenter(id) {
   const prev = centerTab;
   centerTab = id;
-  document.getElementById('view-scene').classList.toggle('hidden', id !== 'scene');
-  document.getElementById('view-game').classList.toggle('hidden', id !== 'game');
-  document.getElementById('view-code').classList.toggle('hidden', id === 'scene' || id === 'game');
+  const view = id === 'scene' || id === 'game';
+  document.getElementById('view-scene').classList.toggle('hidden', split.on ? !view : id !== 'scene');
+  document.getElementById('view-game').classList.toggle('hidden', split.on ? !view : id !== 'game');
+  document.getElementById('view-code').classList.toggle('hidden', view);
+  document.getElementById('center-body').classList.toggle('split', split.on && view);
   if (id === 'scene' || id === 'game') {
     viewport.setMode(id);
     bus.emit('center-view', id);
@@ -284,6 +311,40 @@ function showCenter(id) {
     if (pendingCursors[id]) { code.restoreCursor(id, pendingCursors[id]); delete pendingCursors[id]; }
   }
   renderCenterTabs();
+}
+// Scene and Game side by side: put `id` on `side` ('left' / 'right'), or go back to one view showing `id`
+function setSplit(on, id = 'scene', side = 'left') {
+  split.on = on;
+  if (on) split.left = side === 'left' ? id : (id === 'scene' ? 'game' : 'scene');
+  applySplit();
+  showCenter(id === 'game' ? 'game' : 'scene');
+}
+function applySplit() {
+  const body = document.getElementById('center-body');
+  body.style.setProperty('--split', (split.ratio * 100).toFixed(2) + '%');
+  body.classList.toggle('game-left', split.left === 'game');
+  const view = centerTab === 'scene' || centerTab === 'game';
+  body.classList.toggle('split', split.on && view);
+  viewport.setSplit(split.on);
+  if (!split.on) viewport.setMode(centerTab === 'game' ? 'game' : 'scene');
+  if (view) {
+    document.getElementById('view-scene').classList.toggle('hidden', !split.on && centerTab !== 'scene');
+    document.getElementById('view-game').classList.toggle('hidden', !split.on && centerTab !== 'game');
+  }
+  bus.emit('center-view', 'game');
+  renderCenterTabs();
+}
+function initSplitDivider() {
+  const body = document.getElementById('center-body');
+  const d = el('div', { id: 'split-divider', title: 'Drag to resize · double-click to go back to one view' });
+  body.append(d);
+  d.addEventListener('dblclick', () => setSplit(false, centerTab));
+  d.addEventListener('pointerdown', (e) => {
+    e.preventDefault(); d.setPointerCapture(e.pointerId);
+    const move = (ev) => { const r = body.getBoundingClientRect(); split.ratio = Math.min(0.85, Math.max(0.15, (ev.clientX - r.left) / r.width)); body.style.setProperty('--split', (split.ratio * 100).toFixed(2) + '%'); };
+    const up = () => { d.removeEventListener('pointermove', move); d.removeEventListener('pointerup', up); saveTabs(); };
+    d.addEventListener('pointermove', move); d.addEventListener('pointerup', up);
+  });
 }
 function openScript(path, line, col) {
   if (!project.file(path)) { toast('Not found: ' + path, 'error'); return; }

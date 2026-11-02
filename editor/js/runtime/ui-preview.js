@@ -25,7 +25,7 @@ function uiSubset() {
 }
 
 function overlayOffsets() {
-  const c = viewport.canvas, host = document.getElementById('game-host');
+  const c = viewport.gameCanvas, host = document.getElementById('game-host');
   const cr = c.getBoundingClientRect(), hr = host.getBoundingClientRect();
   return [cr.left - hr.left, cr.top - hr.top];
 }
@@ -37,7 +37,7 @@ export function refreshPreview(force = false) {
 function run(force) {
   if (!viewport || editor.playing) return;
   const overlay = document.getElementById('gui-overlay');
-  if (viewport.mode !== 'game' || !engine.ready || !engine.uiPreview) { if (shown) { clearGui(); shown = false; } return; }
+  if (!viewport.showsGame || !engine.ready || !engine.uiPreview) { if (shown) { clearGui(); shown = false; } return; }
   const sub = uiSubset();
   if (!sub) { if (shown) { clearGui(); shown = false; } hits = []; return; }
   const [w, h] = viewport.gameSize();
@@ -57,7 +57,7 @@ function run(force) {
 
 // topmost UI element under a point in the Game view (edit mode)
 function pickAt(ev) {
-  const c = viewport.canvas.getBoundingClientRect();
+  const c = viewport.gameCanvas.getBoundingClientRect();
   const x = ev.clientX - c.left, y = c.height - (ev.clientY - c.top);
   for (let i = hits.length - 1; i >= 0; i--) {
     const [id, x0, y0, x1, y1] = hits[i];
