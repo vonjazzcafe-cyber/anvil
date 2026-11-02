@@ -20,6 +20,7 @@ import { initOffline } from './core/offline.js';
 import { initUiPreview } from './runtime/ui-preview.js';
 import { rectSize } from './ui/ui-inspector.js';
 import { createUI } from './core/ui-create.js';
+import { initHome, showHome } from './ui/home.js';
 import { initLocalFolder, openProjectFolder, saveProjectToFolder, reconnectFolder, disconnectFolder, linkedFolderName, folderSupported } from './core/local-folder.js';
 
 let viewport;
@@ -31,6 +32,11 @@ let lastCompileOk = false;
 
 async function boot() {
   initLocalFolder();
+  initHome({ openScene: (p) => openScene(p), newProject: () => newProjectDialog(), openFolder: () => openProjectFolder(), reconnect: () => reconnectFolder() });
+  // the logo and the project name open Home (all projects and their scenes)
+  for (const id of ['project-name']) { const e = document.getElementById(id); if (e) { e.style.cursor = 'pointer'; e.title = 'Home: all projects and scenes'; e.addEventListener('click', () => showHome()); } }
+  document.getElementById('project-name')?.before(el('button', { class: 'engine-status', style: { cursor: 'pointer', marginRight: '6px', border: 'none' }, title: 'Home: all projects and scenes', text: '🏠 Home', onclick: () => showHome() }));
+  const logo = document.querySelector('.menu-logo'); if (logo) { logo.style.cursor = 'pointer'; logo.title = 'Home: all projects and scenes'; logo.addEventListener('click', () => showHome()); }
   bus.on('folder-status', updateFolderStatus);
   const last = (await storage.get('lastProject')) || 'My Project';
   await project.load(last);
@@ -544,6 +550,8 @@ async function renameProjectDialog() {
 function initMenus() {
   menuBar(document.getElementById('menus'), [
     ['File', () => [
+      { label: 'Home: All Projects and Scenes…', action: () => showHome() },
+      '-',
       { label: 'New Scene', action: newScene },
       { label: 'Open Scene…', action: async () => { const r = await pick('Open Scene', Object.keys(project.data.files).filter(p => project.file(p).kind === 'scene').map(p => ({ label: baseName(p), hint: p, value: p }))); if (r) openScene(r); } },
       { label: 'Save', shortcut: 'Ctrl+S', action: saveProject },
