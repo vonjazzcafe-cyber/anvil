@@ -76,11 +76,17 @@ async function saveToFolder() {
   if (!root || linkedProject !== project.name) return;
   if (saving) { pendingSave = true; return; }
   saving = (async () => {
+    let outsideChange = false;
     try {
       const files = await diskFiles();
       for (const [path, v] of Object.entries(files)) {
         const sig = sigOf(typeof v === 'string' ? v : v.url);
         if (written.get(path) === sig) continue;
+        // a script or text file that was changed on disk since Anvil last read it (another editor, a tool, an
+        // assistant): don't overwrite it with the older copy in Anvil; it's picked up instead
+        if (typeof v === 'string' && path !== DATA_PATH && mtimes.has(path)) {
+          try { const f = await (await (await dirFor(path, false)).getFileHandle(path.split('/').pop())).getFile(); if (f.lastModified !== mtimes.get(path)) { outsideChange = true; continue; } } catch { }
+        }
         await writeFile(path, typeof v === 'string' ? v : dataURLToBytes(v.url));
         written.set(path, sig);
         if (path === DATA_PATH) lastData = v;
@@ -89,6 +95,7 @@ async function saveToFolder() {
       for (const path of [...written.keys()]) if (!(path in files)) { await deleteFile(path); written.delete(path); }
       for (const f of project.data.folders) if (f.startsWith('Assets')) await ensureDir(f);
       bus.emit('folder-status', { saved: Date.now() });
+      if (outsideChange) setTimeout(() => pullExternalChanges().catch(() => { }), 50);
     } catch (e) {
       console.error(e);
       if (e.name === 'NotAllowedError' || e.name === 'SecurityError') { toast('Lost permission to write to the folder. Use File › Reconnect Project Folder.', 'error'); unlink(false); }
