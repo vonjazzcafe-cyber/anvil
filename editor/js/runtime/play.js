@@ -259,6 +259,7 @@ bus.on('play-edit', () => {
 });
 export function stop(fromError = false) {
   import('./bodytrack.js').then(m => m.stop());
+  import('./speech.js').then(m => m.stop());
   if (!editor.playing) return;
   if (playEdits > 0) {
     toast(`${playEdits} change${playEdits > 1 ? 's' : ''} made while playing ${playEdits > 1 ? 'were' : 'was'} undone, like in Unity. To keep values, use the component's ⋮ › Copy Component while playing, then ⋮ › Paste Component Values after stopping — or just make the change again now.`, 'warn', 9000);

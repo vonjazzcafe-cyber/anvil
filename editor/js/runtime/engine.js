@@ -7,6 +7,7 @@ import { bus } from '../core/events.js';
 import { initPhysics, physicsImports } from './physics.js';
 import { exec as physics2dExec } from './physics2d.js';
 import { bodytrackImports } from './bodytrack.js';
+import { speechImports } from './speech.js';
 // the C# side calls one set of physics functions; which engine answers is chosen when Play starts
 let physicsCurrent = physicsImports;
 const physicsDispatch = {};
@@ -132,6 +133,7 @@ export const engine = {
         physics: physicsDispatch,
         physics2d: { exec: (cmd) => physics2dExec(cmd) },
         bodytrack: bodytrackImports,
+        speech: speechImports,
         anvil: {
           pushFrame: (view) => { lastFrame = view.slice(); },
           pushExtras: (view) => { lastExtras = view.slice(); },
