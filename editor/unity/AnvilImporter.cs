@@ -886,6 +886,11 @@ namespace AnvilImport
                             { string clip = Str(c, "clip"); if (!string.IsNullOrEmpty(clip)) { src.clip = AssetDatabase.LoadAssetAtPath<AudioClip>(clip); if (src.clip == null) problems.Add($"AudioClip {clip} not found ('{p.go.name}')."); } }
                             src.enabled = enabled;
                             break;
+                        case ArticulationBody art:
+                            // robot joints: values by C# property name (drives are ArticulationDrive structs)
+                            ApplyProps(art, c, byId, p.go.name);
+                            art.enabled = enabled;
+                            break;
                         case Component c2d when c2d.GetType().Namespace == "UnityEngine" && (c2d.GetType().Name.EndsWith("2D") || c2d is SpriteRenderer):
                             // 2D physics and sprites: values by C# property name
                             ApplyProps(c2d, c, byId, p.go.name);

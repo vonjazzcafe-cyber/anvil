@@ -82,6 +82,9 @@ function finishCollider(b, bodyId, desc, center, extraRot, local, trigger, frict
   }
 
 export const physicsImports = {
+  // ArticulationBody needs PhysX; Rapier has none, so the C# side warns and leaves them still
+  createArticulation() { return []; },
+  removeArticulation() { },
   reset(gx, gy, gz) {
     if (world) { try { world.free(); } catch (e) {} }
     if (eventQueue) { try { eventQueue.free(); } catch (e) {} }

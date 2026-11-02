@@ -9,7 +9,7 @@ import { exec as physics2dExec } from './physics2d.js';
 // the C# side calls one set of physics functions; which engine answers is chosen when Play starts
 let physicsCurrent = physicsImports;
 const physicsDispatch = {};
-const PHYSICS_FNS = ['reset', 'setGravity', 'createBody', 'removeBody', 'setBodyType', 'setBodyProps', 'setBodySolver', 'createCollider', 'createMeshCollider', 'removeCollider', 'setColliderLayer', 'setMassProps', 'createJoint', 'removeJoint', 'setLayerMatrix', 'setIgnorePair', 'applyCommands', 'step', 'raycast', 'raycastAll', 'shapeCast', 'shapeCastAll', 'overlap', 'closestPoint'];
+const PHYSICS_FNS = ['reset', 'setGravity', 'createBody', 'removeBody', 'setBodyType', 'setBodyProps', 'setBodySolver', 'createCollider', 'createMeshCollider', 'removeCollider', 'setColliderLayer', 'setMassProps', 'createJoint', 'removeJoint', 'createArticulation', 'removeArticulation', 'setLayerMatrix', 'setIgnorePair', 'applyCommands', 'step', 'raycast', 'raycastAll', 'shapeCast', 'shapeCastAll', 'overlap', 'closestPoint'];
 for (const k of PHYSICS_FNS) physicsDispatch[k] = (...a) => { const f = physicsCurrent[k]; return f ? f(...a) : undefined; };
 export async function usePhysicsEngine(name) {
   if (name === 'physx') {

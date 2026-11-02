@@ -10,6 +10,7 @@ const bodies = new Map();     // id -> { actor, type, colliders:Set<id>, maxAng,
 const colliders = new Map();  // id -> { shape, geom, body:id, layer, trigger, iid, local:[7] }
 const byShape = new Map();    // shape pointer -> collider id
 const joints = new Map();     // id -> { joint, kind, b1, b2, d6 }
+const arts = new Map();       // root link body id -> { art, ids:[body ids], links:[PxArticulationLink], cache }
 const materials = new Map();
 let layerMasks = new Uint32Array(32).fill(0xffffffff);
 const ignorePairs = new Set();
@@ -272,7 +273,8 @@ function angularLimitPair(lo, hi) { return new P.PxJointAngularLimitPair(Math.mi
 export const physxImports = {
   reset(gx, gy, gz) {
     if (scene) { try { scene.release(); } catch (e) { } }
-    bodies.clear(); colliders.clear(); byShape.clear(); joints.clear(); touching.clear(); ignorePairs.clear(); events = [];
+    for (const r of arts.values()) { try { r.cache.release(); } catch (e) { } }
+    bodies.clear(); colliders.clear(); byShape.clear(); joints.clear(); arts.clear(); touching.clear(); ignorePairs.clear(); events = [];
     layerMasks = new Uint32Array(32).fill(0xffffffff);
     nextId = 1; worldStatic = null;
     const sd = new P.PxSceneDesc(tol);
@@ -310,21 +312,21 @@ export const physxImports = {
     return id;
   },
   removeBody(id) {
-    const b = bodies.get(id); if (!b) return;
+    const b = bodies.get(id); if (!b || b.type === 3) return;
     for (const cid of b.colliders) { const c = colliders.get(cid); if (c) { byShape.delete(P.getPointer(c.shape)); colliders.delete(cid); dropTouching(cid); } }
     for (const [jid, j] of joints) if (j.b1 === id || j.b2 === id) { try { j.joint.release(); } catch (e) { } joints.delete(jid); }
     try { scene.removeActor(b.actor); b.actor.release(); } catch (e) { }
     bodies.delete(id);
   },
   setBodyType(id, type) {
-    const b = bodies.get(id); if (!b || b.type === type || b.type === 0 || type === 0) return;
+    const b = bodies.get(id); if (!b || b.type === type || b.type === 0 || b.type === 3 || type === 0) return;
     b.type = type;
     b.actor.setRigidBodyFlag(P.PxRigidBodyFlagEnum.eKINEMATIC, type === 2);
     for (const cid of b.colliders) { const c = colliders.get(cid); if (c) setFilter(c); }
     refilter(id);
   },
   setBodyProps(id, p) {
-    const b = bodies.get(id); if (!b || b.type === 0) return;
+    const b = bodies.get(id); if (!b || b.type === 0 || b.type === 3) return;
     const a = b.actor;
     a.setLinearDamping(p[0]); a.setAngularDamping(p[1]);
     a.setActorFlag(P.PxActorFlagEnum.eDISABLE_GRAVITY, !(p[2] > 0));
@@ -340,7 +342,7 @@ export const physxImports = {
   },
   // Rigidbody.solverIterations, solverVelocityIterations, sleepThreshold, maxDepenetrationVelocity
   setBodySolver(id, it, vit, sleep, depen) {
-    const b = bodies.get(id); if (!b || b.type === 0) return;
+    const b = bodies.get(id); if (!b || b.type === 0 || b.type === 3) return;
     b.actor.setSolverIterationCounts(Math.max(1, it | 0), Math.max(0, vit | 0));
     b.actor.setSleepThreshold(Math.max(0, sleep));
     b.actor.setMaxDepenetrationVelocity(depen > 0 ? depen : 1e16);
@@ -453,6 +455,61 @@ export const physxImports = {
     const id = nextId++;
     joints.set(id, { joint: J, kind, b1, b2, d6: isD6 ? J : null, ptr: P.getPointer(J), breakable: extra[11] > 0 || extra[12] > 0 });
     return id;
+  },
+  // ---------------- articulations (Unity's ArticulationBody) ----------------
+  // spec: fixedBase, posIters, velIters, sleep, nLinks, then per link (38): parent index, pose(7), joint type (0 fixed 1 prismatic 2 revolute 3 spherical),
+  // parent frame(7), child frame(7), linDamp, angDamp, maxAngVel, maxLinVel, gravity, ccd, maxJointVel, friction, maxDepen, motion x6 (twist, swing1, swing2, x, y, z: 0 locked 1 limited 2 free)
+  createArticulation(spec) {
+    const n = spec[4] | 0; if (n < 1) return [];
+    const AF = P.PxArticulationFlagEnum, AX = P.PxArticulationAxisEnum, AM = P.PxArticulationMotionEnum, JT = P.PxArticulationJointTypeEnum;
+    const art = physics.createArticulationReducedCoordinate();
+    art.setArticulationFlag(AF.eFIX_BASE, !!spec[0]);
+    art.setSolverIterationCounts(Math.max(1, spec[1] | 0), Math.max(0, spec[2] | 0));
+    art.setSleepThreshold(Math.max(0, spec[3]));
+    const links = [], ids = [];
+    const axes = [AX.eTWIST, AX.eSWING1, AX.eSWING2, AX.eX, AX.eY, AX.eZ];
+    const motion = (m) => (m === 1 ? AM.eLIMITED : m === 2 ? AM.eFREE : AM.eLOCKED);
+    for (let i = 0; i < n; i++) {
+      const o = 5 + i * 38, parent = spec[o] | 0;
+      const link = art.createLink(parent >= 0 ? links[parent] : null, tr(spec, o + 1));
+      link.setLinearDamping(spec[o + 23]); link.setAngularDamping(spec[o + 24]);
+      link.setMaxAngularVelocity(Math.max(0, spec[o + 25]));
+      link.setMaxLinearVelocity(spec[o + 26] > 0 ? Math.min(spec[o + 26], 1e16) : 1e16);
+      link.setActorFlag(P.PxActorFlagEnum.eDISABLE_GRAVITY, !(spec[o + 27] > 0));
+      try { link.setRigidBodyFlag(P.PxRigidBodyFlagEnum.eENABLE_CCD, !!spec[o + 28]); } catch (e) { }
+      link.setMaxDepenetrationVelocity(spec[o + 31] > 0 ? Math.min(spec[o + 31], 1e16) : 1e16);
+      if (parent >= 0) {
+        const J = link.getInboundJoint();
+        const t = spec[o + 8] | 0;
+        J.setJointType(t === 1 ? JT.ePRISMATIC : t === 2 ? JT.eREVOLUTE : t === 3 ? JT.eSPHERICAL : JT.eFIX);
+        J.setParentPose(tr(spec, o + 9)); J.setChildPose(tr(spec, o + 16, T2));
+        if (t !== 0) for (let a = 0; a < 6; a++) {
+          J.setMotion(axes[a], motion(spec[o + 32 + a] | 0));
+          if (spec[o + 29] > 0 && spec[o + 29] < 1e15 && (spec[o + 32 + a] | 0) !== 0) J.setMaxJointVelocity(axes[a], spec[o + 29]);
+        }
+      }
+      links.push(link);
+      const id = nextId++;
+      ids.push(id);
+      bodies.set(id, { actor: link, type: 3, colliders: new Set(), detect: true, inScene: true, root: ids[0], linkIndex: i });
+    }
+    scene.addArticulation(art);
+    const rec = { art, ids, links, cache: art.createCache() };
+    arts.set(ids[0], rec);
+    for (const id of ids) bodies.get(id).art = rec;
+    return ids;
+  },
+  removeArticulation(rootId) {
+    const rec = arts.get(rootId); if (!rec) return;
+    for (const id of rec.ids) {
+      const b = bodies.get(id); if (!b) continue;
+      for (const cid of b.colliders) { const c = colliders.get(cid); if (c) { byShape.delete(P.getPointer(c.shape)); colliders.delete(cid); dropTouching(cid); } }
+      for (const [jid, j] of joints) if (j.b1 === id || j.b2 === id) { try { j.joint.release(); } catch (e) { } joints.delete(jid); }
+      bodies.delete(id);
+    }
+    try { rec.cache.release(); } catch (e) { }
+    try { scene.removeArticulation(rec.art); rec.art.release(); } catch (e) { }
+    arts.delete(rootId);
   },
   removeJoint(id) {
     const j = joints.get(id); if (!j) return;
@@ -599,6 +656,7 @@ function apply(cmd, count) {
     const op = cmd[i] | 0, id = cmd[i + 1] | 0;
     const b = bodies.get(id);
     const dyn = b && b.type === 1;
+    if (b && b.type === 3 && op <= 9) { i += artOp(op, b, cmd, i); continue; }
     switch (op) {
       case 1: // set pose (teleport)
         if (b) {
@@ -658,9 +716,57 @@ function apply(cmd, count) {
         }
         i += 38; break;
       }
+      case 13: { // articulation joint limits and drives: 6 axes x (motion, lo, hi, stiffness, damping, maxForce, target, targetVel, type)
+        const L = b && b.type === 3 ? b.actor : null, J = L && L.getInboundJoint();
+        if (J) {
+          const AX = P.PxArticulationAxisEnum, DT = P.PxArticulationDriveTypeEnum;
+          const axes = [AX.eTWIST, AX.eSWING1, AX.eSWING2, AX.eX, AX.eY, AX.eZ];
+          for (let a = 0; a < 6; a++) {
+            const o = i + 2 + a * 9, m = cmd[o] | 0;
+            if (m === 0 || J.getMotion(axes[a]) === P.PxArticulationMotionEnum.eLOCKED) continue;
+            if (m === 1) { const lim = new P.PxArticulationLimit(Math.min(cmd[o + 1], cmd[o + 2]), Math.max(cmd[o + 1], cmd[o + 2])); J.setLimitParams(axes[a], lim); P.destroy(lim); }
+            const stiff = Math.max(0, cmd[o + 3]), damp = Math.max(0, cmd[o + 4]);
+            const type = stiff === 0 && damp === 0 ? DT.eNONE : (cmd[o + 8] | 0) === 0 ? DT.eFORCE : DT.eACCELERATION;
+            // PhysX 5.6 drives carry a performance envelope: maxEffort is the force limit (the motor's top torque)
+            const env = new P.PxPerformanceEnvelope(cmd[o + 5] > 0 ? Math.min(cmd[o + 5], 3.4e38) : 0, 3.4e38, 0, 0);
+            const d = new P.PxArticulationDrive(stiff, damp, env, type);
+            J.setDriveParams(axes[a], d); P.destroy(d); P.destroy(env);
+            J.setDriveTarget(axes[a], cmd[o + 6], true); J.setDriveVelocity(axes[a], cmd[o + 7], true);
+          }
+          b.art.art.wakeUp();
+        }
+        i += 56; break;
+      }
+      case 14: { // articulation joint positions (teleport the joint)
+        const L = b && b.type === 3 ? b.actor : null, J = L && L.getInboundJoint();
+        if (J) {
+          const AX = P.PxArticulationAxisEnum;
+          const axes = [AX.eTWIST, AX.eSWING1, AX.eSWING2, AX.eX, AX.eY, AX.eZ];
+          for (let a = 0; a < 6; a++) if (J.getMotion(axes[a]) !== P.PxArticulationMotionEnum.eLOCKED) { J.setJointPosition(axes[a], cmd[i + 2 + a]); J.setJointVelocity(axes[a], 0); }
+          try { const kf = new P.PxArticulationKinematicFlags(P.PxArticulationKinematicFlagEnum.ePOSITION); b.art.art.updateKinematic(kf); P.destroy(kf); } catch (e) { }
+          b.art.art.wakeUp();
+        }
+        i += 8; break;
+      }
       default: i = count; break;
     }
   }
+}
+// commands 1-9 aimed at an articulation link: only the root can be teleported or given a velocity
+function artOp(op, b, cmd, i) {
+  const F = P.PxForceModeEnum, A = b.art.art, root = b.linkIndex === 0;
+  switch (op) {
+    case 1: if (root) A.setRootGlobalPose(trv(cmd[i + 2], cmd[i + 3], cmd[i + 4], cmd[i + 5], cmd[i + 6], cmd[i + 7], cmd[i + 8]), true); return 9;
+    case 9: return 9;
+    case 2: if (root) A.setRootLinearVelocity(vec(cmd[i + 2], cmd[i + 3], cmd[i + 4]), true); return 5;
+    case 3: if (root) A.setRootAngularVelocity(vec(cmd[i + 2], cmd[i + 3], cmd[i + 4]), true); return 5;
+    case 4: b.actor.addForce(vec(cmd[i + 2], cmd[i + 3], cmd[i + 4]), F.eIMPULSE, true); return 5;
+    case 5: b.actor.addTorque(vec(cmd[i + 2], cmd[i + 3], cmd[i + 4]), F.eIMPULSE, true); return 5;
+    case 6: b.actor.addTorque(vec(cmd[i + 2], cmd[i + 3], cmd[i + 4]), F.eVELOCITY_CHANGE, true); return 5;
+    case 7: A.wakeUp(); return 2;
+    case 8: A.putToSleep(); return 2;
+  }
+  return 2;
 }
 
 function collect() {
@@ -674,7 +780,8 @@ function collect() {
     const p = rd(pose.get_p()), qq = pose.get_q(), q = [qq.get_x(), qq.get_y(), qq.get_z(), qq.get_w()];
     const v = rd(a.getLinearVelocity()), w = rd(a.getAngularVelocity());
     const cl = rd(a.getCMassLocalPose().get_p()); const cw = qrot(q, cl);
-    out.push(id, p[0], p[1], p[2], q[0], q[1], q[2], q[3], v[0], v[1], v[2], w[0], w[1], w[2], p[0] + cw[0], p[1] + cw[1], p[2] + cw[2], b.type === 1 && a.isSleeping() ? 1 : 0);
+    const sleeping = b.type === 1 ? a.isSleeping() : b.type === 3 ? b.art.art.isSleeping() : false;
+    out.push(id, p[0], p[1], p[2], q[0], q[1], q[2], q[3], v[0], v[1], v[2], w[0], w[1], w[2], p[0] + cw[0], p[1] + cw[1], p[2] + cw[2], sleeping ? 1 : 0);
     n++;
   }
   out[nIdx] = n;
@@ -711,6 +818,33 @@ function collect() {
   }
   out.push(broken.length);
   for (const id of broken) { out.push(id); const j = joints.get(id); if (j) { try { j.joint.release(); } catch (e) { } joints.delete(id); } }
+  // articulation joints: per link id, 6 positions, 6 velocities, then the load from the parent (force xyz, torque xyz in the joint frame)
+  const nIdx2 = out.length; out.push(0); let nl = 0;
+  if (arts.size) {
+    const AX = P.PxArticulationAxisEnum, axes = [AX.eTWIST, AX.eSWING1, AX.eSWING2, AX.eX, AX.eY, AX.eZ];
+    const CF = P.PxArticulationCacheFlagEnum;
+    for (const rec of arts.values()) {
+      let fptr = 0;
+      if (ART_LOADS) try { rec.art.copyInternalStateToCache(rec.cache, cacheFlagsForce()); fptr = P.getPointer(rec.cache.get_linkIncomingJointForce()); } catch (e) { fptr = 0; }
+      const H = fptr ? realAt : null;
+      for (let k = 1; k < rec.links.length; k++) {
+        const L = rec.links[k], J = L.getInboundJoint();
+        out.push(rec.ids[k]);
+        for (let a = 0; a < 6; a++) out.push(J.getJointPosition(axes[a]));
+        for (let a = 0; a < 6; a++) out.push(J.getJointVelocity(axes[a]));
+        if (H) { const base = fptr + L.getLinkIndex() * 32; out.push(H(base, 0), H(base, 1), H(base, 2), H(base, 4), H(base, 5), H(base, 6)); }
+        else out.push(0, 0, 0, 0, 0, 0);
+        nl++;
+      }
+    }
+  }
+  out[nIdx2] = nl;
   return out;
 }
+// reading the incoming joint forces from the articulation cache crashes this PhysX build, so it stays off (loads come from the drives)
+const ART_LOADS = false;
+let cfForce = null;
+function cacheFlagsForce() { return cfForce || (cfForce = new P.PxArticulationCacheFlags(P.PxArticulationCacheFlagEnum.eLINK_INCOMING_JOINT_FORCE)); }
+// one float from PhysX memory (PxSpatialForce = force xyz, pad, torque xyz, pad)
+const realAt = (base, i) => P._emscripten_bind_NativeArrayHelpers_getRealAt_2(base, i);
 export function physxDebugCounts() { return { bodies: bodies.size, colliders: colliders.size, joints: joints.size, touching: touching.size }; }
