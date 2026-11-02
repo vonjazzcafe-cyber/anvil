@@ -256,9 +256,22 @@ async function link(handle, { load }) {
     const p = await readFromFolder(handle.name);
     if (p) {
       const extra = p.__newBinaries; delete p.__newBinaries;
-      await project.replace(p);
+      // never lose work: if the copy in this browser is the same project and newer than the folder
+      // (it was edited while the folder wasn't connected), keep it and write it into the folder instead
+      const folderTime = mtimes.get(DATA_PATH) || 0;
+      const mine = project.data;
+      const browserNewer = mine && mine.name === p.name && (mine.workModified || 0) > folderTime + 2000;
+      if (browserNewer) {
+        try { await writeFile('Logs/folder-copy-before-' + new Date(folderTime).toISOString().replace(/[:.]/g, '-') + '.anvil.json', lastData || ''); } catch { }
+        written.clear(); lastData = null;
+        toast(`Your work in this browser is newer than the folder "${handle.name}", so Anvil kept it and saved it into the folder. The older folder copy is in its Logs folder.`, '', 8000);
+      } else {
+        // keep a copy of what the browser had, in case it was worth keeping
+        try { if (mine && mine.name === p.name) await writeFile('Logs/browser-copy-before-' + new Date().toISOString().replace(/[:.]/g, '-') + '.anvil.json', JSON.stringify(mine)); } catch { }
+        await project.replace(p);
+        await importNewBinaries(extra);
+      }
       linkedProject = project.name;
-      await importNewBinaries(extra);
     }
   }
   linkedProject = project.name;

@@ -168,6 +168,8 @@ export const project = {
   touch(what = 'files') {
     this.dirty = true;
     this.data.modified = Date.now();
+    // real work (not just moving the editor camera): used to tell which copy of a project is newer
+    if (what !== 'editor') this.data.workModified = this.data.modified;
     scheduleSave();
     bus.emit('project-changed', what);
   },
