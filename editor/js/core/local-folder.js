@@ -170,9 +170,14 @@ async function importNewBinaries(files) {
 
 function startPolling() {
   stopPolling();
+  let busy = false, lastTick = 0;
   const tick = async () => {
     if (!root || linkedProject !== project.name) return;   // also while the window is hidden behind another app, so outside changes are in place when you look
+    // never two checks at once (a slow disk would pile them up), and less often while the window is hidden
+    if (busy || (document.hidden && performance.now() - lastTick < 3000)) return;
+    busy = true; lastTick = performance.now();
     try { await pullExternalChanges(); } catch (e) { if (e.name === 'NotAllowedError') unlink(false); }
+    finally { busy = false; }
   };
   window.addEventListener('focus', tick);
   pollTimer = setInterval(tick, 1000);
