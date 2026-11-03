@@ -84,7 +84,8 @@ async function saveToFolder() {
         if (written.get(path) === sig) continue;
         // a script or text file that was changed on disk since Anvil last read it (another editor, a tool, an
         // assistant): don't overwrite it with the older copy in Anvil; it's picked up instead
-        if (typeof v === 'string' && path !== DATA_PATH && mtimes.has(path)) {
+        // the same for project.anvil.json (scenes, prefabs, settings): an outside change is applied first, never written over
+        if (typeof v === 'string' && mtimes.has(path)) {
           try { const f = await (await (await dirFor(path, false)).getFileHandle(path.split('/').pop())).getFile(); if (f.lastModified !== mtimes.get(path)) { outsideChange = true; continue; } } catch { }
         }
         await writeFile(path, typeof v === 'string' ? v : dataURLToBytes(v.url));
@@ -174,7 +175,7 @@ function startPolling() {
     try { await pullExternalChanges(); } catch (e) { if (e.name === 'NotAllowedError') unlink(false); }
   };
   window.addEventListener('focus', tick);
-  pollTimer = setInterval(tick, 2500);
+  pollTimer = setInterval(tick, 1000);
   stopPolling.fn = tick;
 }
 function stopPolling() { clearInterval(pollTimer); if (stopPolling.fn) window.removeEventListener('focus', stopPolling.fn); }
@@ -218,12 +219,16 @@ async function pullExternalChanges() {
       if (written.get(DATA_PATH) === sigOf(text)) mtimes.set(DATA_PATH, file.lastModified);
       else {
         const { editor } = await import('./scene.js');
-        if (saving || pendingSave || editor.playing) return;   // look again after the save / after Play stops
+        if (saving || pendingSave) return;   // look again after the save
+        // changed from outside while playing: stop, load the new version, and play again, so it shows at once
+        const replay = editor.playing && window.anvil?.stop;
+        if (replay) window.anvil.stop();
         mtimes.set(DATA_PATH, file.lastModified);
         const n = applyExternalData(text);
         written.set(DATA_PATH, sigOf(text)); lastData = text;
         changed += n;
         if (n) saveToFolder();
+        if (replay) setTimeout(() => window.anvil.play(), 300);
       }
     }
   }
