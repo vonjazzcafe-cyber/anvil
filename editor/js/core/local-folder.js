@@ -84,9 +84,13 @@ async function saveToFolder() {
         if (written.get(path) === sig) continue;
         // a script or text file that was changed on disk since Anvil last read it (another editor, a tool, an
         // assistant): don't overwrite it with the older copy in Anvil; it's picked up instead
-        // the same for project.anvil.json (scenes, prefabs, settings): an outside change is applied first, never written over
-        if (typeof v === 'string' && mtimes.has(path)) {
-          try { const f = await (await (await dirFor(path, false)).getFileHandle(path.split('/').pop())).getFile(); if (f.lastModified !== mtimes.get(path)) { outsideChange = true; continue; } } catch { }
+        // the same for project.anvil.json (scenes, prefabs, settings): an outside change is applied first, never written over.
+        // Decided by the file's CONTENT (is it still what Anvil last wrote or read?), not only its time, so it can't be missed
+        if (typeof v === 'string' && (mtimes.has(path) || written.has(path))) {
+          try {
+            const f = await (await (await dirFor(path, false)).getFileHandle(path.split('/').pop())).getFile();
+            if (f.lastModified !== mtimes.get(path) || (written.has(path) && sigOf(await f.text()) !== written.get(path))) { mtimes.delete(path); outsideChange = true; continue; }
+          } catch { }
         }
         await writeFile(path, typeof v === 'string' ? v : dataURLToBytes(v.url));
         written.set(path, sig);
@@ -275,7 +279,8 @@ async function link(handle, { load }) {
       const extra = p.__newBinaries; delete p.__newBinaries;
       // never lose work: if the copy in this browser is the same project and newer than the folder
       // (it was edited while the folder wasn't connected), keep it and write it into the folder instead
-      const folderTime = mtimes.get(DATA_PATH) || 0;
+      // the folder's newest change: project.anvil.json or any script / text file in it
+      const folderTime = Math.max(0, ...mtimes.values());
       const mine = project.data;
       const browserNewer = mine && mine.name === p.name && (mine.workModified || 0) > folderTime + 2000;
       if (browserNewer) {
