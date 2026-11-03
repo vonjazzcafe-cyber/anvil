@@ -171,7 +171,7 @@ async function importNewBinaries(files) {
 function startPolling() {
   stopPolling();
   const tick = async () => {
-    if (!root || linkedProject !== project.name || document.hidden) return;
+    if (!root || linkedProject !== project.name) return;   // also while the window is hidden behind another app, so outside changes are in place when you look
     try { await pullExternalChanges(); } catch (e) { if (e.name === 'NotAllowedError') unlink(false); }
   };
   window.addEventListener('focus', tick);

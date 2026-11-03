@@ -9,14 +9,16 @@ export function initOffline() {
   if (location.protocol === 'file:' || new URLSearchParams(location.search).has('nosw')) return;
   navigator.serviceWorker.register(new URL('../../../sw.js', import.meta.url), { scope: new URL('../../../', import.meta.url).pathname })
     .then((reg) => {
-      const offer = (w) => { if (w && navigator.serviceWorker.controller) showUpdate(w); };
+      // a new version found in the first seconds after opening is switched to at once (nothing is open to lose yet);
+      // after that, a notice offers it
+      const offer = (w) => { if (!w || !navigator.serviceWorker.controller) return; if (performance.now() < 20000) w.postMessage('skipWaiting'); else showUpdate(w); };
       if (reg.waiting) offer(reg.waiting);
       reg.addEventListener('updatefound', () => {
         const w = reg.installing;
         w?.addEventListener('statechange', () => { if (w.state === 'installed') offer(w); });
       });
       // look for a new version now and then while the editor stays open
-      setInterval(() => reg.update().catch(() => { }), 30 * 60 * 1000);
+      setInterval(() => reg.update().catch(() => { }), 3 * 60 * 1000);
     })
     .catch((e) => console.warn('Offline copy unavailable:', e));
   let reloading = false;
