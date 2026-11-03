@@ -172,6 +172,23 @@ async function importNewBinaries(files) {
   }
 }
 
+// only ONE tab may save a project to its folder: two tabs would keep writing their own (different) copies over each
+// other. The newest tab to link the folder wins; an older tab with the same project stops saving and says so.
+const TAB_ID = Math.random().toString(36).slice(2);
+let tabChannel = null;
+try {
+  tabChannel = new BroadcastChannel('anvil-folder');
+  tabChannel.onmessage = (e) => {
+    const m = e.data || {};
+    if (m.type === 'linked' && m.id !== TAB_ID && root && linkedProject && m.project === linkedProject) {
+      const name = root.name;
+      unlink(false);
+      toast(`"${m.project}" was opened in another Anvil tab, so this tab stopped saving to the folder "${name}". Use the other tab (or close it and reload this one).`, 'warn', 15000);
+    }
+  };
+} catch { }
+function announceLinked() { try { tabChannel?.postMessage({ type: 'linked', id: TAB_ID, project: linkedProject }); } catch { } }
+
 function startPolling() {
   stopPolling();
   let busy = false, lastTick = 0;
@@ -300,6 +317,7 @@ async function link(handle, { load }) {
   await storage.set(handleKey(project.name), handle);
   await saveToFolder();
   startPolling();
+  announceLinked();
   bus.emit('folder-status', { linked: true });
 }
 function unlink(forget = true) {
