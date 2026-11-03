@@ -336,13 +336,33 @@ function applySplit() {
 }
 function initSplitDivider() {
   const body = document.getElementById('center-body');
-  const d = el('div', { id: 'split-divider', title: 'Drag to resize · double-click to go back to one view' });
+  const d = el('div', { id: 'split-divider', title: 'Drag to resize · drag all the way to one side to close that view · double-click to go back to one view' });
   body.append(d);
   d.addEventListener('dblclick', () => setSplit(false, centerTab));
   d.addEventListener('pointerdown', (e) => {
     e.preventDefault(); d.setPointerCapture(e.pointerId);
-    const move = (ev) => { const r = body.getBoundingClientRect(); split.ratio = Math.min(0.85, Math.max(0.15, (ev.clientX - r.left) / r.width)); body.style.setProperty('--split', (split.ratio * 100).toFixed(2) + '%'); };
-    const up = () => { d.removeEventListener('pointermove', move); d.removeEventListener('pointerup', up); saveTabs(); };
+    const right = () => split.left === 'scene' ? 'game' : 'scene';
+    const views = { scene: document.getElementById('view-scene'), game: document.getElementById('view-game') };
+    let raw = split.ratio, keepRatio = split.ratio;
+    // dragged (almost) all the way to one side: that side's view closes when you let go, like docked tabs in Unity
+    const closing = () => raw < 0.1 ? split.left : raw > 0.9 ? right() : null;
+    const move = (ev) => {
+      const r = body.getBoundingClientRect(); raw = (ev.clientX - r.left) / r.width;
+      split.ratio = Math.min(0.97, Math.max(0.03, raw));
+      body.style.setProperty('--split', (split.ratio * 100).toFixed(2) + '%');
+      const c = closing();
+      for (const [k, v] of Object.entries(views)) v.classList.toggle('split-closing', k === c);
+      if (!c) keepRatio = split.ratio;
+    };
+    const up = () => {
+      d.removeEventListener('pointermove', move); d.removeEventListener('pointerup', up);
+      for (const v of Object.values(views)) v.classList.remove('split-closing');
+      const c = closing();
+      split.ratio = Math.min(0.85, Math.max(0.15, c ? 0.5 : keepRatio));
+      if (c) setSplit(false, c === 'scene' ? 'game' : 'scene');
+      else body.style.setProperty('--split', (split.ratio * 100).toFixed(2) + '%');
+      saveTabs();
+    };
     d.addEventListener('pointermove', move); d.addEventListener('pointerup', up);
   });
 }
