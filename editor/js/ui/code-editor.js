@@ -134,9 +134,13 @@ function makeView(path, text) {
       theme, wc.of(wrapOn ? EditorView.lineWrapping : []),
       EditorView.updateListener.of((u) => {
         if (!u.docChanged) return;
-        const d = docs.get(path); if (d) { d.dirty = true; bus.emit('code-dirty', { path, dirty: true }); }
-        clearTimeout(saveTimer);
+        const d = docs.get(path);
+        clearTimeout(saveTimer); if (d) clearTimeout(d.saveTimer);
+        // the file was just reloaded from the project (changed outside Anvil): nothing to save back
+        if (d && d.reloading) return;
+        if (d) { d.dirty = true; bus.emit('code-dirty', { path, dirty: true }); }
         saveTimer = setTimeout(() => { if (project.file(path)) { project.file(path).text = u.state.doc.toString(); project.touch('code'); } }, 400);
+        if (d) d.saveTimer = saveTimer;
       }),
     ],
   });
@@ -209,7 +213,11 @@ export function reloadFromProject(path) {
   while (a < max && cur.charCodeAt(a) === next.charCodeAt(a)) a++;
   let b = 0;
   while (b < max - a && cur.charCodeAt(cur.length - 1 - b) === next.charCodeAt(next.length - 1 - b)) b++;
-  d.view.dispatch({ changes: { from: a, to: cur.length - b, insert: next.slice(a, next.length - b) } });
+  clearTimeout(d.saveTimer);   // a save of the old text that was about to happen must not write it back
+  d.reloading = true;
+  try { d.view.dispatch({ changes: { from: a, to: cur.length - b, insert: next.slice(a, next.length - b) } }); }
+  finally { d.reloading = false; }
+  d.dirty = false; bus.emit('code-dirty', { path, dirty: false });
 }
 export function relint() { for (const d of docs.values()) try { forceLinting(d.view); } catch (e) { } }
 export function isOpen(path) { return docs.has(path); }

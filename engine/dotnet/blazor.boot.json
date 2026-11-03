@@ -1,7 +1,7 @@
 {
   "mainAssemblyName": "Anvil.Host",
   "resources": {
-    "hash": "sha256-TWxwu4hs7mWGWwFInuoSfo8xpWprz7xAOGK1cAMhjxc=",
+    "hash": "sha256-YTUCYsv4Ll872ofgWKuw3W13Zgs5ASmDYDo0HlqpOnI=",
     "jsModuleNative": {
       "dotnet.native.8.0.32.0nw8qdht41.js": "sha256-6mDkQm8wcqsePLieS1uDjmZJGTlxyzuaoKrjt7Rlztk="
     },
@@ -12,7 +12,7 @@
       "dotnet.native.wasm": "sha256-qR9kvxpEvxj7TYOpJNt6rsgTn3ir9q+4nBKQBSHAgNM="
     },
     "assembly": {
-      "Anvil.Host.wasm": "sha256-mJbx5vNLAKhyEpqbSTSqffdxHVTgypt6g4AjhdgP0Qg=",
+      "Anvil.Host.wasm": "sha256-WRqAbvSAY2mJrTQ8HWZZg6AruPyYExqXIP8GedFItR0=",
       "Microsoft.CodeAnalysis.CSharp.wasm": "sha256-VcpjgiVQGVhlsFFL+GzVh/tl1ycxkiTzhb3zMyKI0Yg=",
       "Microsoft.CodeAnalysis.wasm": "sha256-UrCKIA7ySpcVuJFCzqzHYPujBSMtSeyQCqfCmliSttY=",
       "Microsoft.CSharp.wasm": "sha256-GgVF6ObZfa33yk28UZn9wQmVw0y8zaj2iJkkf8vvpSM=",
@@ -182,7 +182,7 @@
       "System.Xml.XmlSerializer.wasm": "sha256-VNfEuJ0ika2lFgM0mucqDq+ZuoU5TpWiIwkm8WYrGjs=",
       "System.Xml.XPath.wasm": "sha256-RNHgcgZrjTRrHQ3JoZBIwmDQrSZwVC4ofTOamUNEQeY=",
       "System.Xml.XPath.XDocument.wasm": "sha256-CkNlZFpU8nTdhbbIH5mOYnYmvVHcZ3BTPiqeP3AFGTI=",
-      "UnityEngine.wasm": "sha256-Pfm62XlH1AfgeLhNtsKPtBt0xN/pI/tnpNuz6ySlO48=",
+      "UnityEngine.wasm": "sha256-qUtcmfVKyRpyvCMbrJA8HmoLlnvDQBcY8DFijhlr0ds=",
       "WindowsBase.wasm": "sha256-x44/BDspeYCo5BtEz/wpxOH4KQW3M+s1VgOWw0gtHkk="
     }
   },
