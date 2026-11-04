@@ -1,5 +1,5 @@
 // Hierarchy panel: the scene's GameObjects as a tree, with Unity-style drag-to-parent.
-import { el, bus } from '../core/events.js';
+import { el, bus, toast } from '../core/events.js';
 import { editor } from '../core/scene.js';
 import { project, baseName, kindOf } from '../core/project.js';
 import { showMenu } from './menus.js';
@@ -55,7 +55,21 @@ export function render() {
   h.innerHTML = '';
   const sceneName = editor.scenePath ? baseName(editor.scenePath) : 'Untitled';
   const sceneRow = el('div', { class: 'tree-row scene-root' }, el('span', { class: 'tree-arrow', text: '▾' }), el('span', { class: 'tree-icon', text: '◈' }), el('span', { class: 'tname', text: sceneName + (project.dirty && !editor.playing ? '*' : '') }));
-  sceneRow.addEventListener('contextmenu', (e) => { e.preventDefault(); showMenu(createMenuItems(0), e.clientX, e.clientY); });
+  sceneRow.title = 'Double-click to rename the scene';
+  const renameScene = async () => {
+    const path = editor.scenePath; if (!path) return;
+    if (editor.playing) { toast('Stop playing before renaming the scene', 'error'); return; }
+    const name = (await prompt('Rename scene', 'Scene name:', baseName(path), 'Rename'))?.trim();
+    if (!name || name === baseName(path)) return;
+    if (/[\\/:*?"<>|]/.test(name)) { toast('A scene name can\'t contain \\ / : * ? " < > |', 'error'); return; }
+    const np = path.slice(0, path.lastIndexOf('/') + 1) + name + '.unity';
+    if (!project.rename(path, np)) { toast('A scene with that name already exists', 'error'); return; }
+    bus.emit('asset-renamed', { from: path, to: np });
+    toast('Scene renamed to ' + name);
+    render();
+  };
+  sceneRow.addEventListener('dblclick', renameScene);
+  sceneRow.addEventListener('contextmenu', (e) => { e.preventDefault(); showMenu([{ label: 'Rename scene', action: renameScene }, '-', ...createMenuItems(0)], e.clientX, e.clientY); });
   h.append(sceneRow);
   const byParent = new Map();
   for (const o of items) { const p = o.parent || 0; if (!byParent.has(p)) byParent.set(p, []); byParent.get(p).push(o); }
