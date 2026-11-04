@@ -217,7 +217,9 @@ async function liveTick() {
       if (newer) {
         // never interrupt Play: changes wait until you press Stop
         if (window.anvil?.editor?.playing) {
-          if (!liveWaitNoted) { liveWaitNoted = true; toast('New changes on GitHub: they load when you press Stop'); }
+          // nothing can be pushed until the GitHub changes are merged in, so say so every minute while playing
+          const now = Date.now();
+          if (!liveWaitNoted || now - liveWaitNoted > 60000) { liveWaitNoted = now; toast('Not synced with GitHub: press Stop to send your saves and get the new changes', 'error', 8000); }
           return;
         }
         liveWaitNoted = false;
