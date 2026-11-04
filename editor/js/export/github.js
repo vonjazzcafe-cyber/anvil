@@ -4,7 +4,7 @@
 import { project } from '../core/project.js';
 import { el, toast, bus } from '../core/events.js';
 import { dialog, confirm } from '../ui/dialogs.js';
-import { projectToFiles, filesToProject, DATA_PATH } from './format.js';
+import { projectToFiles, filesToProject, DATA_PATH, prettyJson } from './format.js';
 import * as code from '../ui/code-editor.js';
 
 const API = 'https://api.github.com';
@@ -217,9 +217,11 @@ async function liveTick() {
       if (newer) {
         // never interrupt Play: changes wait until you press Stop
         if (window.anvil?.editor?.playing) {
-          // nothing can be pushed until the GitHub changes are merged in, so say so every minute while playing
+          // GitHub's changes wait for Stop, but what you SAVE while playing (PlayerPrefs, e.g. your punches)
+          // goes up now, on top of GitHub's version, so nothing you save is stuck in this browser
+          const sent = await pushPrefsWhilePlaying(token, cfg, h, folder).catch(e => { console.warn('GitHub save-while-playing:', e); return false; });
           const now = Date.now();
-          if (!liveWaitNoted || now - liveWaitNoted > 60000) { liveWaitNoted = now; toast('Not synced with GitHub: press Stop to send your saves and get the new changes', 'error', 8000); }
+          if (!sent && (!liveWaitNoted || now - liveWaitNoted > 60000)) { liveWaitNoted = now; toast('New changes on GitHub: they load when you press Stop', 'info', 5000); }
           return;
         }
         liveWaitNoted = false;
@@ -236,6 +238,33 @@ async function liveTick() {
     }
   } catch (e) { console.warn('GitHub live sync:', e); if (e.status === 401) toast('GitHub sync stopped: ' + e.message, 'error', 8000); }
   finally { liveBusy = false; }
+}
+
+// While playing: put this browser's PlayerPrefs into GitHub's newest project file and commit only that.
+// The last-sync point stays where it was, so pressing Stop still brings in GitHub's other changes.
+async function pushPrefsWhilePlaying(token, cfg, h, folder) {
+  const pre = folder ? folder + '/' : '';
+  const { files: remote } = await remoteFiles(token, cfg.repo, h.tree, folder);
+  const blob = async (sha) => { const b = await gh(token, 'GET', `/repos/${cfg.repo}/git/blobs/${sha}`); return b.encoding === 'base64' ? b64ToText(b.content) : b.content; };
+  const r = remote.get(DATA_PATH)?.sha, b = liveBase.get(DATA_PATH)?.sha;
+  if (!r) return false;
+  const remoteData = JSON.parse(await blob(r)), baseData = b ? JSON.parse(await blob(b)) : { playerPrefs: {} };
+  const mine = project.data.playerPrefs || {}, base = baseData.playerPrefs || {}, theirs = remoteData.playerPrefs || {};
+  const same = (x, y) => JSON.stringify(x) === JSON.stringify(y);
+  let n = 0;
+  for (const k of new Set([...Object.keys(mine), ...Object.keys(base)])) {
+    if (same(mine[k], base[k])) continue;          // not changed here
+    if (same(mine[k], theirs[k])) continue;        // already on GitHub
+    remoteData.playerPrefs = remoteData.playerPrefs || {};
+    if (k in mine) remoteData.playerPrefs[k] = mine[k]; else delete remoteData.playerPrefs[k];
+    n++;
+  }
+  if (!n) return true;
+  const tree = await gh(token, 'POST', `/repos/${cfg.repo}/git/trees`, { base_tree: h.tree, tree: [{ path: pre + DATA_PATH, mode: '100644', type: 'blob', content: prettyJson(remoteData) }] });
+  const commit = await gh(token, 'POST', `/repos/${cfg.repo}/git/commits`, { message: `Update ${project.name} from Anvil (saved while playing)`, tree: tree.sha, parents: [h.sha] });
+  await gh(token, 'PATCH', `/repos/${cfg.repo}/git/refs/heads/${encodeURIComponent(cfg.branch || 'main')}`, { sha: commit.sha });
+  toast(`Saved to GitHub (${n} item${n > 1 ? 's' : ''})`, 'info', 2500);
+  return true;
 }
 
 async function liveMerge(token, cfg, h, folder) {
