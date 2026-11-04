@@ -272,6 +272,7 @@ async function liveMerge(token, cfg, h, folder) {
         project.touch('prefs'); n++;
       }
       for (const f of next.folders || []) project.ensureFolder?.(f);
+      if (!same(prev.trash || [], next.trash || [])) { project.data.trash = next.trash || []; project.touch('files'); n++; }
       if (next.openScene && next.openScene !== prev.openScene && project.file(next.openScene)) bus.emit('open-scene', next.openScene);
     } else if (r) {
       const text = await blob(r);

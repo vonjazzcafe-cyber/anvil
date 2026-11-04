@@ -282,6 +282,7 @@ function applyExternalData(text) {
   }
   if (next.settings && !same(prev.settings, next.settings)) { Object.assign(project.data.settings, next.settings); project.touch('settings'); bus.emit('settings-changed'); n++; }
   for (const f of next.folders || []) project.ensureFolder(f);
+  if (!same(prev.trash || [], next.trash || [])) { project.data.trash = next.trash || []; project.touch('files'); n++; }
   // a scene opened from outside (another tool or an assistant set "openScene") opens here too
   if (next.openScene && next.openScene !== prev.openScene && project.file(next.openScene)) bus.emit('open-scene', next.openScene);
   else if (openTouched) { bus.emit('scene-opened'); bus.emit('scene-changed', { label: 'folder' }); bus.emit('selection-changed'); }

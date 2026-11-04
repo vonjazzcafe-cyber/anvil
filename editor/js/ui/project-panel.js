@@ -8,6 +8,7 @@ import { prompt, confirm } from './dialogs.js';
 import { scriptMeta } from './inspector.js';
 
 const view = () => document.getElementById('project-view');
+const TRASH = '#trash';
 let current = 'Assets';
 let selected = null;
 let renaming = null;
@@ -46,6 +47,14 @@ export function render() {
     if (open) for (const k of kids) walk(k, depth + 1);
   };
   walk('Assets', 0);
+  // Recently deleted (deleted things wait here until you restore them or delete them for good)
+  const nTrash = (project.data.trash || []).length;
+  const trow = el('div', { class: 'tree-row' + (current === TRASH ? ' selected' : '') });
+  trow.style.paddingLeft = '2px'; trow.style.marginTop = '6px';
+  trow.append(el('span', { class: 'tree-arrow', text: '' }), el('span', { class: 'tree-icon', text: '🗑' }), el('span', { class: 'tname', text: 'Recently deleted' + (nTrash ? ` (${nTrash})` : '') }));
+  trow.addEventListener('click', () => { current = TRASH; selected = null; render(); });
+  tree.append(trow);
+  if (current === TRASH) { v.append(tree, renderTrash()); return; }
   // main
   const main = el('div', { class: 'proj-main' });
   const searchBox = el('input', { type: 'text', placeholder: 'Search', value: search, spellcheck: 'false', style: { width: '160px', height: '18px', borderRadius: '9px', background: 'var(--bg-input)', border: '1px solid #1f1f1f', padding: '0 8px' } });
@@ -237,15 +246,58 @@ function duplicateAsset(path) {
 }
 
 async function deleteAsset(path) {
-  const ok = await confirm('Delete selected asset?', `${path}\n\nYou cannot undo the delete assets action.`, 'Delete', true);
+  const ok = await confirm('Delete selected asset?', `${path}\n\nIt goes to "Recently deleted" (bottom of the folder list), where you can restore it.`, 'Delete', true);
   if (!ok) return;
   const wasScript = kindOf(path) === 'script' || project.data.folders.includes(path);
-  if (path === editor.scenePath) { toast("You can't delete the open scene", 'error'); return; }
-  project.remove(path);
+  const open = editor.scenePath;
+  if (open && (open === path || open.startsWith(path + '/'))) {
+    // deleting the open scene: switch to another scene first
+    if (editor.playing) { toast('Stop playing before deleting the open scene', 'error'); return; }
+    const other = Object.keys(project.data.files).find(f => project.data.files[f].kind === 'scene' && f !== path && !f.startsWith(path + '/'));
+    if (!other) { toast("That's your only scene. Make another scene first.", 'error'); return; }
+    bus.emit('open-scene', other);
+  }
+  project.trashItem(path);
   if (selected === path) selected = null;
   bus.emit('asset-deleted', path);
   if (wasScript) bus.emit('scripts-changed', { compile: true });
+  toast(`Deleted ${fileName(path)}. Restore it from "Recently deleted".`);
   render();
+}
+
+function ago(t) {
+  const s = Math.max(0, (Date.now() - t) / 1000);
+  if (s < 60) return 'just now'; if (s < 3600) return Math.floor(s / 60) + ' min ago';
+  if (s < 86400) return Math.floor(s / 3600) + ' h ago'; return new Date(t).toLocaleDateString();
+}
+function renderTrash() {
+  const main = el('div', { class: 'proj-main' });
+  const items = project.data.trash || [];
+  const emptyBtn = el('button', { class: 'vbtn', text: 'Empty', title: 'Delete everything here for good', disabled: !items.length });
+  emptyBtn.addEventListener('click', async () => {
+    if (await confirm('Empty Recently deleted?', `${items.length} item${items.length > 1 ? 's' : ''} will be gone for good.`, 'Delete for good', true)) { project.purgeTrash(); render(); }
+  });
+  main.append(el('div', { class: 'proj-bar' }, el('span', { class: 'proj-crumbs', text: 'Recently deleted' }), emptyBtn));
+  const list = el('div', { style: { overflow: 'auto', flex: '1', padding: '4px 8px' } });
+  if (!items.length) list.append(el('div', { style: { color: '#777', padding: '10px' }, text: 'Nothing here. Deleted assets wait here so you can restore them.' }));
+  items.forEach((t, i) => {
+    const kind = t.folder ? 'folder' : (t.files[t.path]?.kind || kindOf(t.path));
+    const n = Object.keys(t.files).length;
+    const row = el('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 6px', borderBottom: '1px solid #2a2a2a' } });
+    const restore = el('button', { class: 'vbtn', text: 'Restore' });
+    restore.addEventListener('click', () => {
+      const dest = project.restoreTrash(i); if (!dest) return;
+      toast('Restored ' + dest); current = dirName(dest); selected = dest; render(); bus.emit('ping-asset', dest);
+    });
+    const kill = el('button', { class: 'vbtn', text: 'Delete for good' });
+    kill.addEventListener('click', async () => { if (await confirm('Delete for good?', t.path + '\n\nThis cannot be undone.', 'Delete for good', true)) { project.purgeTrash(i); render(); } });
+    row.append(el('span', { style: { width: '18px', textAlign: 'center' }, text: kind === 'script' ? '#' : (ICON[kind] || '≡') }),
+      el('span', { style: { flex: '1', minWidth: '0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: t.path, text: fileName(t.path) + (t.folder ? ` (folder, ${n} file${n === 1 ? '' : 's'})` : '') }),
+      el('span', { style: { color: '#888', whiteSpace: 'nowrap' }, text: dirName(t.path) + ' · ' + ago(t.deletedAt) }), restore, kill);
+    list.append(row);
+  });
+  main.append(list);
+  return main;
 }
 
 function openAsset(path, kind) {

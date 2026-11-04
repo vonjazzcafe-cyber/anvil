@@ -31,6 +31,7 @@ export async function projectToFiles(p) {
   const data = {
     format: 'anvil-project', version: 1, name: p.name,
     settings: p.settings, folders: p.folders, openScene: p.openScene, playerPrefs: p.playerPrefs || {},
+    trash: p.trash || [],
     files: {},
   };
   for (const [path, f] of Object.entries(p.files)) {
@@ -51,7 +52,7 @@ export function filesToProject(files, fallbackName = 'Imported Project') {
   const p = {
     format: 'anvil-project', version: 1, name: d?.name || fallbackName, created: Date.now(), modified: Date.now(),
     settings: d?.settings || undefined, folders: d?.folders || ['Assets'], files: {}, openScene: d?.openScene || null,
-    playerPrefs: d?.playerPrefs || {}, editor: {},
+    playerPrefs: d?.playerPrefs || {}, trash: d?.trash || [], editor: {},
   };
   if (d?.files) for (const [path, f] of Object.entries(d.files)) if (f && f.kind && !TEXT_KINDS.has(f.kind)) p.files[path] = { kind: f.kind, data: f.data };
   for (const [path, text] of Object.entries(files)) {

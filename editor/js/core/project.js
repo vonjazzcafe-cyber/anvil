@@ -152,6 +152,7 @@ export const project = {
     p.files = p.files || {};
     p.playerPrefs = p.playerPrefs || {};
     p.editor = p.editor || {};
+    p.trash = p.trash || [];
     for (const f of Object.values(p.files)) if (f.kind === 'script' && typeof f.text === 'string') f.text = cleanCode(f.text);
     for (const f of Object.values(p.files)) for (const o of (f.data && f.data.objects) || []) for (const c of o.comps || [])
       if (typeof c.type === 'number') { c.lightType = c.type; c.type = 'Light'; }
@@ -237,6 +238,36 @@ export const project = {
     d.settings.scenes = d.settings.scenes.filter(s => d.files[s]);
     this.touch('files');
   },
+  // ---- Recently deleted: a delete keeps a copy here so it can be restored ----
+  trashItem(path) {
+    const d = this.data; d.trash = d.trash || [];
+    const isFolder = d.folders.includes(path);
+    const files = {};
+    for (const [k, f] of Object.entries(d.files)) if (k === path || (isFolder && k.startsWith(path + '/'))) files[k] = clone(f);
+    const folders = isFolder ? d.folders.filter(f => f === path || f.startsWith(path + '/')) : [];
+    const inBuild = d.settings.scenes.filter(s => files[s]);
+    d.trash.unshift({ path, folder: isFolder, deletedAt: Date.now(), files, folders, inBuild });
+    if (d.trash.length > 60) d.trash.length = 60;
+    this.remove(path);
+  },
+  restoreTrash(index) {
+    const d = this.data, t = d.trash?.[index]; if (!t) return null;
+    // put it back where it was; if that name is taken now, use "Name (restored)"
+    let dest = t.path;
+    if (this.exists(dest)) {
+      const fn = fileName(dest), ext = t.folder ? '' : fn.slice(baseName(dest).length + 1);
+      dest = this.uniquePath(dirName(dest), baseName(dest) + ' (restored)', ext);
+    }
+    const move = (k) => dest + k.slice(t.path.length);
+    for (const f of t.folders) this.ensureFolder(move(f));
+    for (const [k, f] of Object.entries(t.files)) { d.files[move(k)] = clone(f); this.ensureFolder(dirName(move(k))); }
+    for (const s of t.inBuild || []) if (!d.settings.scenes.includes(move(s))) d.settings.scenes.push(move(s));
+    d.trash.splice(index, 1);
+    bus.emit('scripts-changed', { path: dest, compile: true });
+    this.touch('files');
+    return dest;
+  },
+  purgeTrash(index) { const d = this.data; if (index == null) d.trash = []; else d.trash.splice(index, 1); this.touch('files'); },
   fixReferences(oldPath, newPath) {
     // asset references inside scenes/prefabs: {"asset": path} and material strings
     const fix = (v) => {
