@@ -171,12 +171,13 @@ export async function pull(cfg, log) {
 // there (scripts whole; scenes, prefabs, settings and saved data one by one inside project.anvil.json), keeping
 // everything you changed here that GitHub didn't touch. Then, if you changed anything here, push it.
 // Nothing is ever lost for good: every push is a commit in the repository's history.
-let liveTimer = null, liveBusy = false, liveBase = null, liveBaseFor = null;
+let liveTimer = null, liveBusy = false, liveBase = null, liveBaseFor = null, liveWaitNoted = false;
 const LIVE_MS = 20000;
 
 export function initGitHubLive() {
   bus.on('project-loaded', () => { liveBase = null; liveBaseFor = null; restartLive(); });
   window.addEventListener('focus', () => { if (liveTimer) liveTick(); });
+  bus.on('play-state', (st) => { if (liveTimer && st && !st.playing) setTimeout(liveTick, 300); });
   restartLive();
 }
 function restartLive() {
@@ -205,7 +206,24 @@ async function liveTick() {
       } else liveBase = new Map();
       liveBaseFor = cfg.lastSha;
     }
-    if (h.sha !== cfg.lastSha) await liveMerge(token, cfg, h, folder);
+    if (h.sha !== cfg.lastSha) {
+      // only take it if it's really NEWER than our last sync (right after a push GitHub can briefly still report
+      // the commit before it; taking that would bounce our own change back)
+      let newer = !cfg.lastSha;
+      if (cfg.lastSha) {
+        const cmp = await gh(token, 'GET', `/repos/${cfg.repo}/compare/${cfg.lastSha}...${h.sha}`).catch(() => null);
+        newer = !!cmp && (cmp.status === 'ahead' || cmp.status === 'diverged');
+      }
+      if (newer) {
+        // never interrupt Play: changes wait until you press Stop
+        if (window.anvil?.editor?.playing) {
+          if (!liveWaitNoted) { liveWaitNoted = true; toast('New changes on GitHub: they load when you press Stop'); }
+          return;
+        }
+        liveWaitNoted = false;
+        await liveMerge(token, cfg, h, folder);
+      }
+    }
     // anything changed here since the last sync? push it
     const local = await projectToFiles(project.data);
     let changed = false;
@@ -223,7 +241,6 @@ async function liveMerge(token, cfg, h, folder) {
   const local = await projectToFiles(project.data);
   const blob = async (sha) => { const b = await gh(token, 'GET', `/repos/${cfg.repo}/git/blobs/${sha}`); return b.encoding === 'base64' ? b64ToText(b.content) : b.content; };
   let n = 0, openTouched = false;
-  const wasPlaying = !!window.anvil?.editor?.playing;
   const paths = new Set([...remote.keys(), ...liveBase.keys()]);
   const todo = [];
   for (const rel of paths) {
@@ -233,7 +250,6 @@ async function liveMerge(token, cfg, h, folder) {
     todo.push(rel);
   }
   if (!todo.length) { remember(cfg, h.sha); return; }
-  if (wasPlaying) window.anvil.stop();
   for (const rel of todo) {
     const r = remote.get(rel)?.sha, b = liveBase.get(rel)?.sha;
     if (rel === DATA_PATH) {
@@ -266,7 +282,6 @@ async function liveMerge(token, cfg, h, folder) {
   remember(cfg, h.sha);
   liveBase = remote; liveBaseFor = h.sha;
   if (n) { toast(`Got ${n} change${n > 1 ? 's' : ''} from GitHub`); bus.emit('project-changed', 'files'); }
-  if (wasPlaying) setTimeout(() => window.anvil.play(), 300);
 }
 
 function remember(cfg, sha) {
