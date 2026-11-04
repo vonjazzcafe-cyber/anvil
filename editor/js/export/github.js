@@ -2,7 +2,7 @@
 // The repo gets the same layout as the Unity export (Assets/... + Assets/Anvil/project.anvil.json),
 // so you can also clone it straight into a Unity project.
 import { project } from '../core/project.js';
-import { el, toast } from '../core/events.js';
+import { el, toast, bus } from '../core/events.js';
 import { dialog, confirm } from '../ui/dialogs.js';
 import { projectToFiles, filesToProject, DATA_PATH } from './format.js';
 import * as code from '../ui/code-editor.js';
@@ -88,13 +88,14 @@ export async function push(cfg, log) {
   const { token, repo, branch } = cfg; const folder = cleanFolder(cfg.folder);
   const pre = folder ? folder + '/' : '';
   code.saveAll();
-  await project.saveNow();
+  if (!cfg.auto) await project.saveNow();
   log('Checking the repository…');
   const info = await gh(token, 'GET', `/repos/${repo}`);
   if (info.permissions && !info.permissions.push) throw new Error('This token can read the repo but not write to it. Give it "Contents: Read and write".');
   let h = await head(token, repo, branch);
   const sync = project.data.editor.github || {};
   if (h && sync.lastSha && sync.lastSha !== h.sha && sync.repo === repo) {
+    if (cfg.auto) return null;   // live sync merges first; never ask
     const ok = await confirm('GitHub has newer changes', 'Someone (maybe you, on another computer) pushed to this repository since your last sync. Pushing now replaces their version of the files you have here. Pull first if you want their changes.', 'Push anyway', true);
     if (!ok) return null;
   }
@@ -158,14 +159,119 @@ export async function pull(cfg, log) {
   await Promise.all(workers);
   const p = filesToProject(out, project.name);
   p.name = project.name;
-  p.editor = Object.assign({}, project.data.editor, { github: { repo, branch, folder, lastSha: h.sha, lastSync: Date.now() } });
+  p.editor = Object.assign({}, project.data.editor, { github: { repo, branch, folder, lastSha: h.sha, lastSync: Date.now(), live: !!cfg.live } });
   await project.replace(p);
   log(`Pulled ${wanted.length} file(s).`);
   return { sha: h.sha };
 }
 
+
+// ---------------- live sync: keep the project and the repository in step by themselves ----------------
+// Every 20 seconds (and when the window gets focus): if GitHub has a newer commit, take the files that changed
+// there (scripts whole; scenes, prefabs, settings and saved data one by one inside project.anvil.json), keeping
+// everything you changed here that GitHub didn't touch. Then, if you changed anything here, push it.
+// Nothing is ever lost for good: every push is a commit in the repository's history.
+let liveTimer = null, liveBusy = false, liveBase = null, liveBaseFor = null;
+const LIVE_MS = 20000;
+
+export function initGitHubLive() {
+  bus.on('project-loaded', () => { liveBase = null; liveBaseFor = null; restartLive(); });
+  window.addEventListener('focus', () => { if (liveTimer) liveTick(); });
+  restartLive();
+}
+function restartLive() {
+  clearInterval(liveTimer); liveTimer = null;
+  const cfg = project.data?.editor?.github;
+  if (!cfg?.live || !cfg.repo || !getToken()) return;
+  liveTimer = setInterval(liveTick, LIVE_MS);
+  setTimeout(liveTick, 1500);
+}
+
+async function liveTick() {
+  if (liveBusy) return;
+  const cfg = project.data?.editor?.github;
+  const token = getToken();
+  if (!cfg?.live || !cfg.repo || !token) { clearInterval(liveTimer); liveTimer = null; return; }
+  liveBusy = true;
+  try {
+    const folder = cleanFolder(cfg.folder), branch = cfg.branch || 'main';
+    const h = await head(token, cfg.repo, branch);
+    if (!h) return;
+    // what the repository looked like at our last sync (the common starting point)
+    if (!liveBase || liveBaseFor !== cfg.lastSha) {
+      if (cfg.lastSha) {
+        const c = await gh(token, 'GET', `/repos/${cfg.repo}/git/commits/${cfg.lastSha}`);
+        liveBase = (await remoteFiles(token, cfg.repo, c.tree.sha, folder)).files;
+      } else liveBase = new Map();
+      liveBaseFor = cfg.lastSha;
+    }
+    if (h.sha !== cfg.lastSha) await liveMerge(token, cfg, h, folder);
+    // anything changed here since the last sync? push it
+    const local = await projectToFiles(project.data);
+    let changed = false;
+    for (const [rel, text] of Object.entries(local)) if ((liveBase.get(rel)?.sha) !== await blobSha(text)) { changed = true; break; }
+    if (changed) {
+      const r = await push({ token, repo: cfg.repo, branch, folder, message: `Update ${project.name} from Anvil (auto)`, auto: true }, () => { });
+      if (r) { liveBase = null; liveBaseFor = null; }
+    }
+  } catch (e) { console.warn('GitHub live sync:', e); if (e.status === 401) toast('GitHub sync stopped: ' + e.message, 'error', 8000); }
+  finally { liveBusy = false; }
+}
+
+async function liveMerge(token, cfg, h, folder) {
+  const { files: remote } = await remoteFiles(token, cfg.repo, h.tree, folder);
+  const local = await projectToFiles(project.data);
+  const blob = async (sha) => { const b = await gh(token, 'GET', `/repos/${cfg.repo}/git/blobs/${sha}`); return b.encoding === 'base64' ? b64ToText(b.content) : b.content; };
+  let n = 0, openTouched = false;
+  const wasPlaying = !!window.anvil?.editor?.playing;
+  const paths = new Set([...remote.keys(), ...liveBase.keys()]);
+  const todo = [];
+  for (const rel of paths) {
+    const r = remote.get(rel)?.sha, b = liveBase.get(rel)?.sha;
+    if (r === b) continue;                                  // GitHub didn't change it
+    if (rel !== DATA_PATH && !(isManaged(rel) && !rel.startsWith('Assets/Anvil/'))) continue;
+    todo.push(rel);
+  }
+  if (!todo.length) { remember(cfg, h.sha); return; }
+  if (wasPlaying) window.anvil.stop();
+  for (const rel of todo) {
+    const r = remote.get(rel)?.sha, b = liveBase.get(rel)?.sha;
+    if (rel === DATA_PATH) {
+      if (!r) continue;
+      const next = JSON.parse(await blob(r));
+      const prev = b ? JSON.parse(await blob(b)) : { files: {}, settings: {}, playerPrefs: {} };
+      const same = (x, y) => JSON.stringify(x) === JSON.stringify(y);
+      for (const [path, f] of Object.entries(next.files || {})) {
+        if (same(prev.files?.[path], f)) continue;
+        project.writeData(path, f.data); n++;
+        if (path === project.data.openScene) openTouched = true;
+      }
+      for (const path of Object.keys(prev.files || {})) if (!(path in (next.files || {})) && project.file(path)) { project.remove(path); n++; }
+      if (next.settings && !same(prev.settings, next.settings)) { Object.assign(project.data.settings, next.settings); project.touch('settings'); bus.emit('settings-changed'); n++; }
+      const np = next.playerPrefs || {}, pp = prev.playerPrefs || {};
+      for (const k of new Set([...Object.keys(np), ...Object.keys(pp)])) {
+        if (same(np[k], pp[k])) continue;
+        project.data.playerPrefs = project.data.playerPrefs || {};
+        if (k in np) project.data.playerPrefs[k] = np[k]; else delete project.data.playerPrefs[k];
+        project.touch('prefs'); n++;
+      }
+      for (const f of next.folders || []) project.ensureFolder?.(f);
+      if (next.openScene && next.openScene !== prev.openScene && project.file(next.openScene)) bus.emit('open-scene', next.openScene);
+    } else if (r) {
+      const text = await blob(r);
+      if (project.file(rel)?.text !== text) { project.writeText(rel, text); code.reloadFromProject?.(rel); n++; }
+    } else if (project.file(rel)) { project.remove(rel); n++; }
+  }
+  if (openTouched) { bus.emit('scene-opened'); bus.emit('scene-changed', { label: 'github' }); bus.emit('selection-changed'); }
+  remember(cfg, h.sha);
+  liveBase = remote; liveBaseFor = h.sha;
+  if (n) { toast(`Got ${n} change${n > 1 ? 's' : ''} from GitHub`); bus.emit('project-changed', 'files'); }
+  if (wasPlaying) setTimeout(() => window.anvil.play(), 300);
+}
+
 function remember(cfg, sha) {
-  project.data.editor.github = { repo: cfg.repo, branch: cfg.branch, folder: cleanFolder(cfg.folder), lastSha: sha, lastSync: Date.now() };
+  const was = project.data.editor.github || {};
+  project.data.editor.github = { repo: cfg.repo, branch: cfg.branch || 'main', folder: cleanFolder(cfg.folder), lastSha: sha, lastSync: Date.now(), live: cfg.live ?? was.live ?? false };
   project.touch('editor');
 }
 
@@ -178,6 +284,7 @@ export function githubDialog() {
   const branch = el('input', { type: 'text', class: 'wide', value: saved.branch || 'main', spellcheck: 'false' });
   const folder = el('input', { type: 'text', class: 'wide', placeholder: '(repository root)', value: saved.folder || '', spellcheck: 'false' });
   const message = el('input', { type: 'text', class: 'wide', placeholder: `Update ${project.name} from Anvil`, spellcheck: 'false' });
+  const liveBox = el('input', { type: 'checkbox' }); liveBox.checked = !!saved.live;
   const out = el('div', { class: 'gh-log' });
   const log = (m, err) => { out.append(el('div', { class: err ? 'err' : '', text: m })); out.scrollTop = out.scrollHeight; };
   for (const i of [token, repo, branch, folder, message]) i.addEventListener('keydown', e => e.stopPropagation());
@@ -194,17 +301,21 @@ export function githubDialog() {
     row('Branch', branch),
     row('Folder', folder, 'optional: keep the project in a sub-folder of the repository'),
     row('Message', message, 'optional commit message for Push'),
+    el('label', { class: 'gh-check' }, liveBox, el('span', { text: 'Keep in sync automatically: every 20 seconds, get new changes from GitHub and push yours (needs the token remembered)' })),
     el('div', { class: 'gh-last', text: lastInfo }),
     out);
   let busy = false;
   const run = async (fn) => {
     if (busy) return false;
-    const cfg = { token: token.value.trim(), repo: repo.value.trim().replace(/^https?:\/\/github\.com\//, '').replace(/\.git$/, '').replace(/\/+$/, ''), branch: branch.value.trim() || 'main', folder: folder.value, message: message.value };
+    const cfg = { live: liveBox.checked, token: token.value.trim(), repo: repo.value.trim().replace(/^https?:\/\/github\.com\//, '').replace(/\.git$/, '').replace(/\/+$/, ''), branch: branch.value.trim() || 'main', folder: folder.value, message: message.value };
     if (!cfg.token) { log('Paste your token first.', true); return false; }
     if (!/^[\w.-]+\/[\w.-]+$/.test(cfg.repo)) { log('Repository must look like owner/name.', true); return false; }
     setToken(cfg.token, rememberBox.checked);
     busy = true;
-    try { const r = await fn(cfg, (m) => log(m)); if (r) toast('GitHub: done'); }
+    try {
+      const r = await fn(cfg, (m) => log(m)); if (r) toast('GitHub: done');
+      if (r && project.data.editor.github) { project.data.editor.github.live = liveBox.checked; project.touch('editor'); restartLive(); if (liveBox.checked) log('Automatic sync is on.'); }
+    }
     catch (e) { console.error(e); log(e.message || String(e), true); }
     finally { busy = false; }
     return false; // keep dialog open

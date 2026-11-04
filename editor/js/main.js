@@ -14,7 +14,7 @@ import * as code from './ui/code-editor.js';
 import { engine } from './runtime/engine.js';
 import { initPlay, play, stop, setPaused, stepOnce } from './runtime/play.js';
 import { exportUnityZip, exportProjectZip, importProjectZip } from './export/exporter.js';
-import { githubDialog } from './export/github.js';
+import { githubDialog, initGitHubLive } from './export/github.js';
 import { COMPONENTS } from './core/components.js';
 import { initOffline } from './core/offline.js';
 import { initUiPreview } from './runtime/ui-preview.js';
@@ -81,6 +81,7 @@ async function boot() {
   initSplitDivider();
   engine.load();
   initOffline();
+  initGitHubLive();
   document.getElementById('boot')?.remove();
   window.anvil = { project, editor, viewport, engine, bus, compileNow, play: () => play(compileBeforePlay), stop, setPaused, stepOnce, scriptMeta, addScriptOrComponent, openScript, showCenter, showBottom, getEntries, rectSize, createUI };
 }
