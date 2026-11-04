@@ -32,7 +32,7 @@ export function initPlay(vp) {
   }, true);
   window.addEventListener('keydown', (e) => {
     if (!editor.playing || !gameFocused) return;
-    if ((e.ctrlKey || e.metaKey) && ['KeyP', 'KeyS', 'KeyZ', 'KeyY'].includes(e.code)) return; // editor shortcuts
+    if ((e.ctrlKey || e.metaKey) && ['KeyP', 'KeyS'].includes(e.code)) return; // editor shortcuts (Ctrl+Z / Ctrl+Y go to the game while it has focus)
     if (e.code === 'Escape' && pointerLocked) { document.exitPointerLock(); }
     if (!held.has(e.code)) downs.add(e.code);
     held.add(e.code);

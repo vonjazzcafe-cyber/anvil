@@ -506,8 +506,8 @@ function initShortcuts() {
     if (mod && e.code === 'KeyP') { e.preventDefault(); if (e.shiftKey) { if (editor.playing) setPaused(!editor.paused); } else if (e.altKey) stepOnce(); else play(compileBeforePlay); return; }
     if (mod && e.code === 'KeyS' && !document.activeElement?.closest?.('.cm-editor')) { e.preventDefault(); saveProject(); return; }
     if (typing) return;
-    if (mod && e.code === 'KeyZ') { e.preventDefault(); if (e.shiftKey) editor.redo(); else editor.undo(); return; }
-    if (mod && e.code === 'KeyY') { e.preventDefault(); editor.redo(); return; }
+    if (mod && e.code === 'KeyZ') { e.preventDefault(); if (editor.playing) return; if (e.shiftKey) editor.redo(); else editor.undo(); return; }
+    if (mod && e.code === 'KeyY') { e.preventDefault(); if (editor.playing) return; editor.redo(); return; }
     if (mod && e.code === 'KeyD' && editor.selection.length && !editor.playing) { e.preventDefault(); editor.duplicate(editor.selection); return; }
     if (mod && e.shiftKey && e.code === 'KeyN' && !editor.playing) { e.preventDefault(); editor.createEmpty(0); return; }
     if (mod) return;
